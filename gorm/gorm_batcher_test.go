@@ -7,9 +7,10 @@ import (
 	"sync"
 	"testing"
 
+	gormv1 "github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/mysql"
 	"github.com/stretchr/testify/assert"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
+	gormv2 "gorm.io/gorm"
 )
 
 type TestModel struct {
@@ -18,7 +19,7 @@ type TestModel struct {
 	Value int    `gorm:"type:int"`
 }
 
-var db *gorm.DB
+var db *gormv2.DB
 
 func TestMain(m *testing.M) {
 	// Get the DSN from environment variable
@@ -27,11 +28,19 @@ func TestMain(m *testing.M) {
 		panic("DSN environment variable is not set")
 	}
 
-	var err error
-	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	// Open a GORM v1 connection
+	v1DB, err := gormv1.Open("mysql", dsn)
 	if err != nil {
-		panic("failed to connect database")
+		panic("failed to connect database using GORM v1")
 	}
+
+	// Convert to GORM v2
+	v2DB, err := GormV1ToV2Adapter(v1DB)
+	if err != nil {
+		panic("failed to convert GORM v1 to v2")
+	}
+
+	db = v2DB
 
 	// Migrate the schema
 	err = db.AutoMigrate(&TestModel{})
@@ -43,8 +52,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	// Clean up
-	sqlDB, _ := db.DB()
-	_ = sqlDB.Close()
+	v1DB.Close()
 
 	os.Exit(code)
 }
