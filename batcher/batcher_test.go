@@ -71,8 +71,6 @@ func TestBatchProcessor(t *testing.T) {
 		err := processor.SubmitAndWait(1)
 		assert.NoError(t, err)
 
-		time.Sleep(60 * time.Millisecond)
-
 		err = processor.SubmitAndWait(2)
 		assert.NoError(t, err)
 

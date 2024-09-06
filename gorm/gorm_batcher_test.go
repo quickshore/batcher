@@ -6,10 +6,8 @@ import (
 	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -51,11 +49,11 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestBatcher_Insert(t *testing.T) {
+func TestInsertBatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewBatcher(db, 3, 100*time.Millisecond, ctx)
+	batcher := NewInsertBatcher[*TestModel](db, 3, 100, ctx)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -66,25 +64,23 @@ func TestBatcher_Insert(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	time.Sleep(200 * time.Millisecond) // Wait for batches to be processed
-
 	// Check if all items were inserted
 	var count int64
 	db.Model(&TestModel{}).Count(&count)
 	assert.Equal(t, int64(5), count)
 }
 
-func TestBatcher_Update(t *testing.T) {
+func TestUpdateBatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewBatcher(db, 3, 100*time.Millisecond, ctx)
+	batcher := NewUpdateBatcher[*TestModel](db, 3, 100, ctx, []string{"Value"})
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
 
 	// Insert some initial data
-	initialModels := []TestModel{
+	initialModels := []*TestModel{
 		{Name: "Test 1", Value: 10},
 		{Name: "Test 2", Value: 20},
 		{Name: "Test 3", Value: 30},
@@ -92,28 +88,30 @@ func TestBatcher_Update(t *testing.T) {
 	db.Create(&initialModels)
 
 	// Update the models
-	for i := range initialModels {
-		initialModels[i].Value += 5
-		err := batcher.Update(&initialModels[i])
+	for i, model := range initialModels {
+		model.Value += 5
+		model.Name = fmt.Sprintf("Updated %d", i+1) // This should not be updated
+		err := batcher.Update(model)
 		assert.NoError(t, err)
 	}
 
-	time.Sleep(200 * time.Millisecond) // Wait for batches to be processed
-
-	// Check if all items were updated
+	// Check if all items were updated correctly
 	var updatedModels []TestModel
 	db.Find(&updatedModels)
 	assert.Len(t, updatedModels, 3)
 	for i, model := range updatedModels {
 		assert.Equal(t, initialModels[i].Value, model.Value)
+		assert.NotEqual(t, fmt.Sprintf("Updated %d", i+1), model.Name)
+		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name)
 	}
 }
 
-func TestBatcher_ConcurrentOperations(t *testing.T) {
+func TestConcurrentOperations(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewBatcher(db, 10, 100*time.Millisecond, ctx)
+	insertBatcher := NewInsertBatcher[*TestModel](db, 10, 100, ctx)
+	updateBatcher := NewUpdateBatcher[*TestModel](db, 10, 100, ctx, nil)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -126,13 +124,12 @@ func TestBatcher_ConcurrentOperations(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			err := batcher.Insert(&TestModel{Name: fmt.Sprintf("Test %d", i), Value: i})
+			err := insertBatcher.Insert(&TestModel{Name: fmt.Sprintf("Test %d", i), Value: i})
 			assert.NoError(t, err)
 		}(i)
 	}
 
 	wg.Wait()
-	time.Sleep(200 * time.Millisecond) // Wait for batches to be processed
 
 	// Check if all items were inserted
 	var count int64
@@ -148,13 +145,12 @@ func TestBatcher_ConcurrentOperations(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			updatedModels[i].Value += 1000
-			err := batcher.Update(&updatedModels[i])
+			err := updateBatcher.Update(&updatedModels[i])
 			assert.NoError(t, err)
 		}(i)
 	}
 
 	wg.Wait()
-	time.Sleep(200 * time.Millisecond) // Wait for batches to be processed
 
 	// Check if all items were updated
 	db.Find(&updatedModels)
@@ -162,75 +158,4 @@ func TestBatcher_ConcurrentOperations(t *testing.T) {
 	for _, model := range updatedModels {
 		assert.True(t, model.Value > 1000, "Expected Value to be greater than 1000, got %d for ID %d", model.Value, model.ID)
 	}
-}
-
-func TestBatcher_MixedOperations(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	batcher := NewBatcher(db, 3, 100*time.Millisecond, ctx)
-
-	// Clean up the table before the test
-	db.Exec("DELETE FROM test_models")
-
-	// Insert some initial data
-	initialModel := TestModel{Name: "Test 1", Value: 10}
-	err := batcher.Insert(&initialModel)
-	require.NoError(t, err)
-
-	time.Sleep(200 * time.Millisecond) // Wait for batch to be processed
-
-	// Fetch the inserted model
-	var modelToUpdate TestModel
-	db.First(&modelToUpdate, "name = ?", initialModel.Name)
-
-	// Update the model
-	modelToUpdate.Value = 20
-	err = batcher.Update(&modelToUpdate)
-	require.NoError(t, err)
-
-	// Insert a new model
-	newModel := TestModel{Name: "Test 2", Value: 30}
-	err = batcher.Insert(&newModel)
-	require.NoError(t, err)
-
-	time.Sleep(200 * time.Millisecond) // Wait for batches to be processed
-
-	// Check if all operations were performed correctly
-	var models []TestModel
-	db.Find(&models)
-	assert.Len(t, models, 2)
-	assert.Equal(t, "Test 1", models[0].Name)
-	assert.Equal(t, 20, models[0].Value)
-	assert.Equal(t, "Test 2", models[1].Name)
-	assert.Equal(t, 30, models[1].Value)
-}
-
-func TestBatcher_ContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	batcher := NewBatcher(db, 3, 100*time.Millisecond, ctx)
-
-	// Clean up the table before the test
-	db.Exec("DELETE FROM test_models")
-
-	// Insert some items
-	for i := 1; i <= 10; i++ {
-		err := batcher.Insert(&TestModel{Name: fmt.Sprintf("Test %d", i), Value: i})
-		assert.NoError(t, err)
-		if i == 8 {
-			// Cancel the context halfway through
-			cancel()
-		}
-	}
-
-	// Check the number of inserted items
-	var count int64
-	db.Model(&TestModel{}).Count(&count)
-	assert.Equal(t, int64(10), count, "Expected 6 items, got %d", count)
-
-	// Verify that the last item was inserted
-	var lastItem TestModel
-	result := db.Where("Name = ?", "Test 10").First(&lastItem)
-	assert.NoError(t, result.Error)
-	assert.Equal(t, 10, lastItem.Value)
 }

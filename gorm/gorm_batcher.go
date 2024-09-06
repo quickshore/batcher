@@ -2,71 +2,65 @@ package gorm
 
 import (
 	"context"
-	"errors"
-	"reflect"
 	"time"
 
 	"atlasgurus/batcher/batcher"
 	"gorm.io/gorm"
 )
 
-// Batcher is a GORM batcher for batch inserts and updates
-type Batcher struct {
-	db            *gorm.DB
-	insertBatcher *batcher.BatchProcessor[interface{}]
-	updateBatcher *batcher.BatchProcessor[interface{}]
+// InsertBatcher is a GORM batcher for batch inserts
+type InsertBatcher[T any] struct {
+	db      *gorm.DB
+	batcher *batcher.BatchProcessor[T]
 }
 
-// NewBatcher creates a new GORM batcher
-func NewBatcher(db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *Batcher {
-	return &Batcher{
-		db:            db,
-		insertBatcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchInsert(db)),
-		updateBatcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate(db)),
+// UpdateBatcher is a GORM batcher for batch updates
+type UpdateBatcher[T any] struct {
+	db           *gorm.DB
+	batcher      *batcher.BatchProcessor[T]
+	updateFields []string
+}
+
+// NewInsertBatcher creates a new GORM insert batcher
+func NewInsertBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *InsertBatcher[T] {
+	return &InsertBatcher[T]{
+		db:      db,
+		batcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchInsert[T](db)),
+	}
+}
+
+// NewUpdateBatcher creates a new GORM update batcher
+func NewUpdateBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context, updateFields []string) *UpdateBatcher[T] {
+	return &UpdateBatcher[T]{
+		db:           db,
+		batcher:      batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](db, updateFields)),
+		updateFields: updateFields,
 	}
 }
 
 // Insert submits an item for batch insertion
-func (b *Batcher) Insert(item interface{}) error {
-	return b.insertBatcher.SubmitAndWait(item)
+func (b *InsertBatcher[T]) Insert(item T) error {
+	return b.batcher.SubmitAndWait(item)
 }
 
 // Update submits an item for batch update
-func (b *Batcher) Update(item interface{}) error {
-	return b.updateBatcher.SubmitAndWait(item)
+func (b *UpdateBatcher[T]) Update(item T) error {
+	return b.batcher.SubmitAndWait(item)
 }
 
-func batchInsert(db *gorm.DB) func([]interface{}) error {
-	return func(items []interface{}) error {
+func batchInsert[T any](db *gorm.DB) func([]T) error {
+	return func(items []T) error {
 		if len(items) == 0 {
 			return nil
 		}
-
-		// Create a slice of the correct type
-		sliceType := reflect.SliceOf(reflect.TypeOf(items[0]))
-		slice := reflect.MakeSlice(sliceType, len(items), len(items))
-
-		// Copy items into the new slice
-		for i, item := range items {
-			slice.Index(i).Set(reflect.ValueOf(item))
-		}
-
-		return db.Create(slice.Interface()).Error
+		return db.Create(items).Error
 	}
 }
 
-func batchUpdate(db *gorm.DB) func([]interface{}) error {
-	return func(items []interface{}) error {
+func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
+	return func(items []T) error {
 		if len(items) == 0 {
 			return nil
-		}
-
-		// Ensure all items are of the same type
-		firstType := reflect.TypeOf(items[0])
-		for _, item := range items {
-			if reflect.TypeOf(item) != firstType {
-				return errors.New("all items in a batch update must be of the same type")
-			}
 		}
 
 		// Start a transaction
@@ -75,19 +69,15 @@ func batchUpdate(db *gorm.DB) func([]interface{}) error {
 			return tx.Error
 		}
 
-		// Create a slice of the correct type
-		sliceType := reflect.SliceOf(firstType)
-		slice := reflect.MakeSlice(sliceType, len(items), len(items))
-
-		// Copy items into the new slice
-		for i, item := range items {
-			slice.Index(i).Set(reflect.ValueOf(item))
-		}
-
-		// Perform the batch update
-		if err := tx.Save(slice.Interface()).Error; err != nil {
-			tx.Rollback()
-			return err
+		for _, item := range items {
+			query := tx.Model(item)
+			if len(updateFields) > 0 {
+				query = query.Select(updateFields)
+			}
+			if err := query.Updates(item).Error; err != nil {
+				tx.Rollback()
+				return err
+			}
 		}
 
 		return tx.Commit().Error
