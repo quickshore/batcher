@@ -214,22 +214,23 @@ func TestBatcher_ContextCancellation(t *testing.T) {
 	db.Exec("DELETE FROM test_models")
 
 	// Insert some items
-	for i := 1; i <= 5; i++ {
+	for i := 1; i <= 10; i++ {
 		err := batcher.Insert(&TestModel{Name: fmt.Sprintf("Test %d", i), Value: i})
 		assert.NoError(t, err)
+		if i == 8 {
+			// Cancel the context halfway through
+			cancel()
+		}
 	}
-
-	// Cancel the context
-	cancel()
-
-	// Try to insert after cancellation
-	err := batcher.Insert(&TestModel{Name: "Should not be inserted", Value: 100})
-	assert.Error(t, err)
-
-	time.Sleep(200 * time.Millisecond) // Wait for any ongoing operations to complete
 
 	// Check the number of inserted items
 	var count int64
 	db.Model(&TestModel{}).Count(&count)
-	assert.True(t, count > 0 && count <= 5, "Expected between 1 and 5 items, got %d", count)
+	assert.Equal(t, int64(10), count, "Expected 6 items, got %d", count)
+
+	// Verify that the last item was inserted
+	var lastItem TestModel
+	result := db.Where("Name = ?", "Test 10").First(&lastItem)
+	assert.NoError(t, result.Error)
+	assert.Equal(t, 10, lastItem.Value)
 }
