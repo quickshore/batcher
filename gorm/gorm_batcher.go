@@ -18,8 +18,7 @@ type Batcher struct {
 }
 
 // NewBatcher creates a new GORM batcher
-func NewBatcher(db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration) *Batcher {
-	ctx := context.Background()
+func NewBatcher(db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *Batcher {
 	return &Batcher{
 		db:            db,
 		insertBatcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchInsert(db)),
@@ -77,7 +76,7 @@ func batchUpdate(db *gorm.DB) func([]interface{}) error {
 		}
 
 		for _, item := range items {
-			if err := tx.Updates(item).Error; err != nil {
+			if err := tx.Model(item).Updates(item).Error; err != nil {
 				tx.Rollback()
 				return err
 			}
