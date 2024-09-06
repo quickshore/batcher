@@ -75,11 +75,19 @@ func batchUpdate(db *gorm.DB) func([]interface{}) error {
 			return tx.Error
 		}
 
-		for _, item := range items {
-			if err := tx.Model(item).Updates(item).Error; err != nil {
-				tx.Rollback()
-				return err
-			}
+		// Create a slice of the correct type
+		sliceType := reflect.SliceOf(firstType)
+		slice := reflect.MakeSlice(sliceType, len(items), len(items))
+
+		// Copy items into the new slice
+		for i, item := range items {
+			slice.Index(i).Set(reflect.ValueOf(item))
+		}
+
+		// Perform the batch update
+		if err := tx.Save(slice.Interface()).Error; err != nil {
+			tx.Rollback()
+			return err
 		}
 
 		return tx.Commit().Error
