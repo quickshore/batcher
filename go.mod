@@ -1,6 +1,6 @@
 module github.com/atlasgurus/batcher
 
-go 1.23
+go 1.20
 
 require (
 	github.com/jinzhu/gorm v1.9.16
