@@ -1,4 +1,4 @@
-name: Go Multi-DB Tests
+name: Go Multi-DB Tests and Benchmark
 
 on:
   push:
@@ -20,19 +20,41 @@ jobs:
         options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.20'
-    - name: Set MySQL DSN and Dialect
-      run: |
-        echo "DSN=root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true" >> $GITHUB_ENV
-        echo "DIALECT=mysql" >> $GITHUB_ENV
-    - name: Build
-      run: go build -v ./...
-    - name: Test
-      run: go test -v ./...
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+      - name: Set MySQL DSN and Dialect
+        run: |
+          echo "DSN=root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true" >> $GITHUB_ENV
+          echo "DIALECT=mysql" >> $GITHUB_ENV
+      - name: Build
+        run: go build -v ./...
+      - name: Test
+        run: go test -v ./...
+      - name: Run Benchmark
+        run: |
+          set +e
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          TEST_EXIT_CODE=$?
+          cat benchmark_output.txt
+          if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo "Benchmark failed with exit code $TEST_EXIT_CODE. See output above."
+            exit $TEST_EXIT_CODE
+          fi
+        env:
+          DSN: ${{ env.DSN }}
+          DIALECT: ${{ env.DIALECT }}
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        with:
+          name: mysql-benchmark-results
+          path: benchmark_output.txt
+      - name: Summarize benchmark results
+        run: |
+          echo "## MySQL Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -A 7 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
 
   test-postgres:
     runs-on: ubuntu-latest
@@ -47,38 +69,82 @@ jobs:
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.20'
-    - name: Set Postgres DSN and Dialect
-      run: |
-        echo "DSN=postgres://postgres:postgrespassword@localhost:5432/testdb?sslmode=disable" >> $GITHUB_ENV
-        echo "DIALECT=postgres" >> $GITHUB_ENV
-    - name: Build
-      run: go build -v ./...
-    - name: Test
-      run: go test -v ./...
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+      - name: Set Postgres DSN and Dialect
+        run: |
+          echo "DSN=postgres://postgres:postgrespassword@localhost:5432/testdb?sslmode=disable" >> $GITHUB_ENV
+          echo "DIALECT=postgres" >> $GITHUB_ENV
+      - name: Build
+        run: go build -v ./...
+      - name: Test
+        run: go test -v ./...
+      - name: Run Benchmark
+        run: |
+          set +e
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          TEST_EXIT_CODE=$?
+          cat benchmark_output.txt
+          if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo "Benchmark failed with exit code $TEST_EXIT_CODE. See output above."
+            exit $TEST_EXIT_CODE
+          fi
+        env:
+          DSN: ${{ env.DSN }}
+          DIALECT: ${{ env.DIALECT }}
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        with:
+          name: postgres-benchmark-results
+          path: benchmark_output.txt
+      - name: Summarize benchmark results
+        run: |
+          echo "## PostgreSQL Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -A 7 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
 
   test-sqlite:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.20'
-    - name: Set up SQLite
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y sqlite3 libsqlite3-dev
-    - name: Set SQLite DSN and Dialect
-      run: |
-        echo "DSN=file:test.db?cache=shared&mode=memory" >> $GITHUB_ENV
-        echo "DIALECT=sqlite3" >> $GITHUB_ENV
-    - name: Build
-      run: go build -v ./...
-    - name: Test
-      run: go test -v ./...
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.20'
+      - name: Set up SQLite
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3 libsqlite3-dev
+      - name: Set SQLite DSN and Dialect
+        run: |
+          echo "DSN=file:test.db?cache=shared&mode=memory" >> $GITHUB_ENV
+          echo "DIALECT=sqlite3" >> $GITHUB_ENV
+      - name: Build
+        run: go build -v ./...
+      - name: Test
+        run: go test -v ./...
+      - name: Run Benchmark
+        run: |
+          set +e
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          TEST_EXIT_CODE=$?
+          cat benchmark_output.txt
+          if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo "Benchmark failed with exit code $TEST_EXIT_CODE. See output above."
+            exit $TEST_EXIT_CODE
+          fi
+        env:
+          DSN: ${{ env.DSN }}
+          DIALECT: ${{ env.DIALECT }}
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        with:
+          name: sqlite-benchmark-results
+          path: benchmark_output.txt
+      - name: Summarize benchmark results
+        run: |
+          echo "## SQLite Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -A 7 benchmark_output.txt >> $GITHUB_STEP_SUMMARY

@@ -257,14 +257,11 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	err := batcher.Update(updatedModels, nil) // Update all fields
 	assert.NoError(t, err)
 
-	time.Sleep(200 * time.Millisecond)
-
 	var finalModels []TestModel
 	db.Order("id asc").Find(&finalModels)
 	assert.Len(t, finalModels, 3)
 
 	for i, model := range finalModels {
-		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
 		assert.Equal(t, initialModels[i].Value+5, model.Value)
 	}
@@ -297,14 +294,11 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	err := batcher.Update(updatedModels, []string{"Value"})
 	assert.NoError(t, err)
 
-	time.Sleep(200 * time.Millisecond)
-
 	var finalModels []TestModel
 	db.Order("id asc").Find(&finalModels)
 	assert.Len(t, finalModels, 3)
 
 	for i, model := range finalModels {
-		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name, "Name should not have been updated")
 		assert.Equal(t, initialModels[i].Value+10, model.Value, "Value should have been updated")
 	}
@@ -338,14 +332,11 @@ func TestUpdateBatcher_CompositeKey(t *testing.T) {
 	err := batcher.Update(updatedModels, []string{"Name", "Value"})
 	assert.NoError(t, err)
 
-	time.Sleep(200 * time.Millisecond)
-
 	var finalModels []CompositeKeyModel
 	db.Order("id1 asc, id2 asc").Find(&finalModels)
 	assert.Len(t, finalModels, 3)
 
 	for i, model := range finalModels {
-		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
 		assert.Equal(t, initialModels[i].Value+5, model.Value)
 		assert.Equal(t, initialModels[i].ID1, model.ID1)
