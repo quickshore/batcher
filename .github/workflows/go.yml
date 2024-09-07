@@ -33,13 +33,22 @@ jobs:
         run: go build -v ./...
       - name: Test
         run: go test -v ./...
+      - name: Prepare for Benchmark
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Directory contents:"
+          ls -R
+          echo "Go version:"
+          go version
+          echo "Go environment:"
+          go env
       - name: Run Benchmark
         run: |
-          go test -v -bench=BenchmarkGORMBatcher -benchtime=10s ./... > mysql_benchmark.txt 2>&1 || true
+          echo "Running benchmark..."
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=10s ./... 2>&1 | tee mysql_benchmark.txt
+          echo "Benchmark execution completed"
+          echo "Benchmark output:"
           cat mysql_benchmark.txt
-          env:
-            DSN: root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true
-            DIALECT: mysql
       - name: Upload MySQL benchmark results
         uses: actions/upload-artifact@v3
         with:
@@ -72,13 +81,6 @@ jobs:
         run: go build -v ./...
       - name: Test
         run: go test -v ./...
-      - name: Run Benchmark
-        run: |
-          go test -v -bench=BenchmarkGORMBatcher -benchtime=10s ./... > mysql_benchmark.txt 2>&1 || true
-          cat mysql_benchmark.txt
-          env:
-            DSN: root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true
-            DIALECT: mysql
       - name: Upload Postgres benchmark results
         uses: actions/upload-artifact@v3
         with:
@@ -106,13 +108,15 @@ jobs:
         run: go build -v ./...
       - name: Test
         run: go test -v ./...
-      - name: Run Benchmark
+      - name: Prepare for Benchmark
         run: |
-          go test -v -bench=BenchmarkGORMBatcher -benchtime=10s ./... > mysql_benchmark.txt 2>&1 || true
-          cat mysql_benchmark.txt
-          env:
-            DSN: root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true
-            DIALECT: mysql
+          echo "Current directory: $(pwd)"
+          echo "Directory contents:"
+          ls -R
+          echo "Go version:"
+          go version
+          echo "Go environment:"
+          go env
       - name: Upload SQLite benchmark results
         uses: actions/upload-artifact@v3
         with:
