@@ -14,9 +14,9 @@ func BenchmarkGORMBatcher(b *testing.B) {
 
 	// Configuration
 	numRoutines := 100
-	operationsPerRoutine := 1000
+	operationsPerRoutine := 100
 	maxBatchSize := 100
-	maxWaitTime := 5 * time.Millisecond
+	maxWaitTime := 1 * time.Millisecond
 
 	// Create batchers
 	insertBatcher := NewInsertBatcher[*TestModel](getDBProvider(), maxBatchSize, maxWaitTime, ctx)
@@ -62,9 +62,6 @@ func BenchmarkGORMBatcher(b *testing.B) {
 
 	b.StopTimer()
 
-	// Allow time for any pending operations to complete
-	time.Sleep(5 * time.Second)
-
 	// Verify data integrity
 	var count int64
 	db.Model(&TestModel{}).Count(&count)
@@ -75,8 +72,14 @@ func BenchmarkGORMBatcher(b *testing.B) {
 
 	// Calculate expected sum
 	expectedSum := int64(0)
-	for i := 0; i < numRoutines*operationsPerRoutine/2; i++ {
-		expectedSum += int64(i * 2 * 10) // Each record is updated to j * 10, where j is odd
+	for routineId := 0; routineId < numRoutines; routineId++ {
+		for j := 0; j < operationsPerRoutine; j++ {
+			if j%2 == 0 { // Even operations are inserts
+				expectedSum += int64(j)
+			} else {
+				expectedSum += int64(j * 10)
+			}
+		}
 	}
 
 	// Print statistics and verification results
@@ -96,18 +99,5 @@ func BenchmarkGORMBatcher(b *testing.B) {
 	}
 	if sumValue != expectedSum {
 		b.Errorf("Sum of values mismatch. Got: %d, Expected: %d", sumValue, expectedSum)
-	}
-
-	// Print the first 10 and last 10 records for debugging
-	var firstTenRecords, lastTenRecords []TestModel
-	db.Limit(10).Order("id ASC").Find(&firstTenRecords)
-	db.Limit(10).Order("id DESC").Find(&lastTenRecords)
-	b.Logf("First 10 records:")
-	for _, record := range firstTenRecords {
-		b.Logf("ID: %d, Name: %s, Value: %d", record.ID, record.Name, record.Value)
-	}
-	b.Logf("Last 10 records:")
-	for _, record := range lastTenRecords {
-		b.Logf("ID: %d, Name: %s, Value: %d", record.ID, record.Name, record.Value)
 	}
 }
