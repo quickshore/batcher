@@ -257,9 +257,12 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	err := batcher.Update(updatedModels, nil) // Update all fields
 	assert.NoError(t, err)
 
+	time.Sleep(200 * time.Millisecond)
+
 	var finalModels []TestModel
-	db.Find(&finalModels)
+	db.Order("id asc").Find(&finalModels)
 	assert.Len(t, finalModels, 3)
+
 	for i, model := range finalModels {
 		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
@@ -294,9 +297,12 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	err := batcher.Update(updatedModels, []string{"Value"})
 	assert.NoError(t, err)
 
+	time.Sleep(200 * time.Millisecond)
+
 	var finalModels []TestModel
-	db.Find(&finalModels)
+	db.Order("id asc").Find(&finalModels)
 	assert.Len(t, finalModels, 3)
+
 	for i, model := range finalModels {
 		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name, "Name should not have been updated")
@@ -309,9 +315,6 @@ func TestUpdateBatcher_CompositeKey(t *testing.T) {
 	defer cancel()
 
 	batcher := NewUpdateBatcher[*CompositeKeyModel](getDBProvider(), 3, 100*time.Millisecond, ctx)
-	// Migrate the schema for CompositeKeyModel
-	err := db.AutoMigrate(&CompositeKeyModel{})
-	assert.NoError(t, err)
 
 	db.Exec("DELETE FROM composite_key_models")
 
@@ -332,12 +335,15 @@ func TestUpdateBatcher_CompositeKey(t *testing.T) {
 		}
 	}
 
-	err = batcher.Update(updatedModels, []string{"Name", "Value"})
+	err := batcher.Update(updatedModels, []string{"Name", "Value"})
 	assert.NoError(t, err)
 
+	time.Sleep(200 * time.Millisecond)
+
 	var finalModels []CompositeKeyModel
-	db.Find(&finalModels)
+	db.Order("id1 asc, id2 asc").Find(&finalModels)
 	assert.Len(t, finalModels, 3)
+
 	for i, model := range finalModels {
 		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
