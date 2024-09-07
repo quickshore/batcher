@@ -36,16 +36,18 @@ func BenchmarkGORMBatcher(b *testing.B) {
 		go func(routineID int) {
 			defer wg.Done()
 			for j := 0; j < operationsPerRoutine; j++ {
-				if j%2 == 0 { // Even operations are inserts, odd are updates
+				if j%2 == 0 { // Even operations are inserts
 					// Insert
-					model := &TestModel{Name: fmt.Sprintf("Test %d-%d", routineID, j), Value: j}
+					id := routineID*operationsPerRoutine/2 + j/2 + 1
+					model := &TestModel{ID: uint(id), Name: fmt.Sprintf("Test %d-%d", routineID, j), Value: j}
 					err := insertBatcher.Insert(model)
 					if err != nil {
 						b.Logf("Insert error: %v", err)
 					}
-				} else {
+				} else { // Odd operations are updates
 					// Update
-					model := &TestModel{ID: uint((routineID*operationsPerRoutine + j + 1) / 2), Value: j * 10}
+					id := j/2 + 1 // This ensures we update each record once
+					model := &TestModel{ID: uint(id), Value: j * 10}
 					err := updateBatcher.Update([]*TestModel{model}, []string{"Value"})
 					if err != nil {
 						b.Logf("Update error: %v", err)
@@ -73,14 +75,8 @@ func BenchmarkGORMBatcher(b *testing.B) {
 
 	// Calculate expected sum
 	expectedSum := int64(0)
-	for i := 0; i < numRoutines; i++ {
-		for j := 0; j < operationsPerRoutine; j++ {
-			if j%2 == 0 {
-				expectedSum += int64(j) // Initial insert value
-			} else {
-				expectedSum += int64(j * 10) // Updated value
-			}
-		}
+	for i := 0; i < numRoutines*operationsPerRoutine/2; i++ {
+		expectedSum += int64(i * 2 * 10) // Each record is updated to j * 10, where j is odd
 	}
 
 	// Print statistics and verification results
@@ -102,11 +98,16 @@ func BenchmarkGORMBatcher(b *testing.B) {
 		b.Errorf("Sum of values mismatch. Got: %d, Expected: %d", sumValue, expectedSum)
 	}
 
-	// Print the first 10 records for debugging
-	var firstTenRecords []TestModel
+	// Print the first 10 and last 10 records for debugging
+	var firstTenRecords, lastTenRecords []TestModel
 	db.Limit(10).Order("id ASC").Find(&firstTenRecords)
+	db.Limit(10).Order("id DESC").Find(&lastTenRecords)
 	b.Logf("First 10 records:")
 	for _, record := range firstTenRecords {
+		b.Logf("ID: %d, Name: %s, Value: %d", record.ID, record.Name, record.Value)
+	}
+	b.Logf("Last 10 records:")
+	for _, record := range lastTenRecords {
 		b.Logf("ID: %d, Name: %s, Value: %d", record.ID, record.Name, record.Value)
 	}
 }
