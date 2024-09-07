@@ -35,11 +35,13 @@ jobs:
         run: go test -v ./...
       - name: Run Benchmark
         run: |
+          set +e
           go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          TEST_EXIT_CODE=$?
           cat benchmark_output.txt
-          if [ $? -ne 0 ]; then
-            echo "Benchmark failed. See output above."
-            exit 1
+          if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo "Benchmark failed with exit code $TEST_EXIT_CODE. See output above."
+            exit $TEST_EXIT_CODE
           fi
         env:
           DSN: ${{ env.DSN }}
@@ -78,11 +80,13 @@ jobs:
         run: go test -v ./...
       - name: Run Benchmark
         run: |
+          set +e
           go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          TEST_EXIT_CODE=$?
           cat benchmark_output.txt
-          if [ $? -ne 0 ]; then
-            echo "Benchmark failed. See output above."
-            exit 1
+          if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo "Benchmark failed with exit code $TEST_EXIT_CODE. See output above."
+            exit $TEST_EXIT_CODE
           fi
         env:
           DSN: ${{ env.DSN }}
@@ -116,11 +120,13 @@ jobs:
         run: go test -v ./...
       - name: Run Benchmark
         run: |
+          set +e
           go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          TEST_EXIT_CODE=$?
           cat benchmark_output.txt
-          if [ $? -ne 0 ]; then
-            echo "Benchmark failed. See output above."
-            exit 1
+          if [ $TEST_EXIT_CODE -ne 0 ]; then
+            echo "Benchmark failed with exit code $TEST_EXIT_CODE. See output above."
+            exit $TEST_EXIT_CODE
           fi
         env:
           DSN: ${{ env.DSN }}
