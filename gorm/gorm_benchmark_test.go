@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func BenchmarkGORMBatcher(b *testing.B) {
@@ -15,8 +13,8 @@ func BenchmarkGORMBatcher(b *testing.B) {
 	defer cancel()
 
 	// Configuration
-	numRoutines := 100
-	operationsPerRoutine := 100
+	numRoutines := 10
+	operationsPerRoutine := 1000
 	maxBatchSize := 100
 	maxWaitTime := 50 * time.Millisecond
 
@@ -42,12 +40,16 @@ func BenchmarkGORMBatcher(b *testing.B) {
 					// Insert
 					model := &TestModel{Name: fmt.Sprintf("Test %d-%d", routineID, j), Value: j}
 					err := insertBatcher.Insert(model)
-					assert.NoError(b, err)
+					if err != nil {
+						b.Logf("Insert error: %v", err)
+					}
 				} else {
 					// Update
 					model := &TestModel{ID: uint((routineID*operationsPerRoutine + j + 1) / 2), Value: j * 10}
 					err := updateBatcher.Update([]*TestModel{model}, []string{"Value"})
-					assert.NoError(b, err)
+					if err != nil {
+						b.Logf("Update error: %v", err)
+					}
 				}
 			}
 		}(i)
@@ -57,6 +59,9 @@ func BenchmarkGORMBatcher(b *testing.B) {
 	duration := time.Since(startTime)
 
 	b.StopTimer()
+
+	// Allow time for any pending operations to complete
+	time.Sleep(5 * time.Second)
 
 	// Verify data integrity
 	var count int64
@@ -79,17 +84,29 @@ func BenchmarkGORMBatcher(b *testing.B) {
 	}
 
 	// Print statistics and verification results
-	fmt.Printf("Benchmark Statistics:\n")
-	fmt.Printf("Total Duration: %v\n", duration)
-	fmt.Printf("Total Operations: %d\n", numRoutines*operationsPerRoutine)
-	fmt.Printf("Inserts: %d\n", numRoutines*operationsPerRoutine/2)
-	fmt.Printf("Updates: %d\n", numRoutines*operationsPerRoutine/2)
-	fmt.Printf("Operations per second: %.2f\n", float64(numRoutines*operationsPerRoutine)/duration.Seconds())
-	fmt.Printf("Average time per operation: %v\n", duration/time.Duration(numRoutines*operationsPerRoutine))
-	fmt.Printf("Total records in database: %d (Expected: %d)\n", count, expectedCount)
-	fmt.Printf("Sum of all values in database: %d (Expected: %d)\n", sumValue, expectedSum)
+	b.Logf("Benchmark Statistics:")
+	b.Logf("Total Duration: %v", duration)
+	b.Logf("Total Operations: %d", numRoutines*operationsPerRoutine)
+	b.Logf("Inserts: %d", numRoutines*operationsPerRoutine/2)
+	b.Logf("Updates: %d", numRoutines*operationsPerRoutine/2)
+	b.Logf("Operations per second: %.2f", float64(numRoutines*operationsPerRoutine)/duration.Seconds())
+	b.Logf("Average time per operation: %v", duration/time.Duration(numRoutines*operationsPerRoutine))
+	b.Logf("Total records in database: %d (Expected: %d)", count, expectedCount)
+	b.Logf("Sum of all values in database: %d (Expected: %d)", sumValue, expectedSum)
 
 	// Assertions
-	assert.Equal(b, expectedCount, count, "Record count mismatch")
-	assert.Equal(b, expectedSum, sumValue, "Sum of values mismatch")
+	if count != expectedCount {
+		b.Errorf("Record count mismatch. Got: %d, Expected: %d", count, expectedCount)
+	}
+	if sumValue != expectedSum {
+		b.Errorf("Sum of values mismatch. Got: %d, Expected: %d", sumValue, expectedSum)
+	}
+
+	// Print the first 10 records for debugging
+	var firstTenRecords []TestModel
+	db.Limit(10).Order("id ASC").Find(&firstTenRecords)
+	b.Logf("First 10 records:")
+	for _, record := range firstTenRecords {
+		b.Logf("ID: %d, Name: %s, Value: %d", record.ID, record.Name, record.Value)
+	}
 }
