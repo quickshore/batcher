@@ -309,6 +309,9 @@ func TestUpdateBatcher_CompositeKey(t *testing.T) {
 	defer cancel()
 
 	batcher := NewUpdateBatcher[*CompositeKeyModel](getDBProvider(), 3, 100*time.Millisecond, ctx)
+	// Migrate the schema for CompositeKeyModel
+	err := db.AutoMigrate(&CompositeKeyModel{})
+	assert.NoError(t, err)
 
 	db.Exec("DELETE FROM composite_key_models")
 
@@ -329,7 +332,7 @@ func TestUpdateBatcher_CompositeKey(t *testing.T) {
 		}
 	}
 
-	err := batcher.Update(updatedModels, []string{"Name", "Value"})
+	err = batcher.Update(updatedModels, []string{"Name", "Value"})
 	assert.NoError(t, err)
 
 	var finalModels []CompositeKeyModel

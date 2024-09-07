@@ -146,6 +146,17 @@ func batchUpdate[T any](dbProvider DBProvider) func([][]UpdateItem[T]) error {
 	}
 }
 
+// Helper function to check if a string is in a slice
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// getPrimaryKeyAndValues uses reflection to find the primary key fields and their values
 func getPrimaryKeyAndValues(item interface{}) ([]string, []interface{}) {
 	t := reflect.TypeOf(item)
 	v := reflect.ValueOf(item)
@@ -168,13 +179,4 @@ func getPrimaryKeyAndValues(item interface{}) ([]string, []interface{}) {
 	}
 
 	return keys, values
-}
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }
