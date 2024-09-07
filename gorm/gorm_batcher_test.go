@@ -257,8 +257,6 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	err := batcher.Update(updatedModels, nil) // Update all fields
 	assert.NoError(t, err)
 
-	time.Sleep(200 * time.Millisecond)
-
 	var finalModels []TestModel
 	db.Order("id asc").Find(&finalModels)
 	assert.Len(t, finalModels, 3)
@@ -296,8 +294,6 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 
 	err := batcher.Update(updatedModels, []string{"Value"})
 	assert.NoError(t, err)
-
-	time.Sleep(200 * time.Millisecond)
 
 	var finalModels []TestModel
 	db.Order("id asc").Find(&finalModels)
@@ -337,8 +333,6 @@ func TestUpdateBatcher_CompositeKey(t *testing.T) {
 
 	err := batcher.Update(updatedModels, []string{"Name", "Value"})
 	assert.NoError(t, err)
-
-	time.Sleep(200 * time.Millisecond)
 
 	var finalModels []CompositeKeyModel
 	db.Order("id1 asc, id2 asc").Find(&finalModels)
