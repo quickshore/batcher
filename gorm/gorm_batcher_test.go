@@ -252,6 +252,12 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	db.Find(&updatedModels)
 	assert.Len(t, updatedModels, 3)
 	for i, model := range updatedModels {
+		// Add this before the assertions
+		var updatedModels []TestModel
+		db.Find(&updatedModels)
+		for _, model := range updatedModels {
+			fmt.Printf("Model after update: %+v\n", model)
+		}
 		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name, "Name should not have been updated")
 		assert.Equal(t, initialModels[i].Value+5, model.Value, "Value should have been updated")
 	}
