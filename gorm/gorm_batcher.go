@@ -58,28 +58,31 @@ func batchInsert[T any](db *gorm.DB) func([]T) error {
 }
 
 func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
-	return func(items []T) error {
-		if len(items) == 0 {
-			return nil
-		}
+    return func(items []T) error {
+        if len(items) == 0 {
+            return nil
+        }
 
-		// Start a transaction
-		tx := db.Begin()
-		if tx.Error != nil {
-			return tx.Error
-		}
+        // Start a transaction
+        tx := db.Begin()
+        if tx.Error != nil {
+            return tx.Error
+        }
 
-		for _, item := range items {
-			query := tx.Model(item)
-			if len(updateFields) > 0 {
-				query = query.Select(updateFields)
-			}
-			if err := query.Updates(item).Error; err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
+        for _, item := range items {
+            query := tx.Model(item)
+            if len(updateFields) > 0 {
+                query = query.Select(updateFields)
+            } else {
+                // If no fields are specified, update all fields
+                query = query.Select("*")
+            }
+            if err := query.Updates(item).Error; err != nil {
+                tx.Rollback()
+                return err
+            }
+        }
 
-		return tx.Commit().Error
-	}
+        return tx.Commit().Error
+    }
 }
