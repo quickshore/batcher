@@ -192,7 +192,7 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 
 	db.Exec("DELETE FROM test_models")
 
-	initialModels := []*TestModel{
+	initialModels := []TestModel{
 		{Name: "Test 1", Value: 10},
 		{Name: "Test 2", Value: 20},
 		{Name: "Test 3", Value: 30},
@@ -202,7 +202,7 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	for i, model := range initialModels {
 		model.Name = fmt.Sprintf("Updated %d", i+1)
 		model.Value += 5 // Changed from 10 to 5 to match actual behavior
-		err := batcher.Update(model)
+		err := batcher.Update(&model)
 		assert.NoError(t, err)
 	}
 
