@@ -290,3 +290,54 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 		assert.Equal(t, initialModels[i].Value+10, model.Value, "Value should have been updated")
 	}
 }
+
+type CompositeKeyModel struct {
+	ID1   int    `gorm:"primaryKey"`
+	ID2   string `gorm:"primaryKey"`
+	Name  string
+	Value int
+}
+
+func TestUpdateBatcher_CompositeKey(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Migrate the schema for CompositeKeyModel
+	err := db.AutoMigrate(&CompositeKeyModel{})
+	assert.NoError(t, err)
+
+	batcher := NewUpdateBatcher[*CompositeKeyModel](db, 3, 100*time.Millisecond, ctx)
+
+	db.Exec("DELETE FROM composite_key_models")
+
+	initialModels := []CompositeKeyModel{
+		{ID1: 1, ID2: "A", Name: "Test 1", Value: 10},
+		{ID1: 1, ID2: "B", Name: "Test 2", Value: 20},
+		{ID1: 2, ID2: "A", Name: "Test 3", Value: 30},
+	}
+	db.Create(&initialModels)
+
+	updatedModels := make([]*CompositeKeyModel, len(initialModels))
+	for i := range initialModels {
+		updatedModels[i] = &CompositeKeyModel{
+			ID1:   initialModels[i].ID1,
+			ID2:   initialModels[i].ID2,
+			Name:  fmt.Sprintf("Updated %d", i+1),
+			Value: initialModels[i].Value + 5,
+		}
+	}
+
+	err = batcher.Update(updatedModels, []string{"Name", "Value"})
+	assert.NoError(t, err)
+
+	var finalModels []CompositeKeyModel
+	db.Find(&finalModels)
+	assert.Len(t, finalModels, 3)
+	for i, model := range finalModels {
+		fmt.Printf("Model after update: %+v\n", model)
+		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
+		assert.Equal(t, initialModels[i].Value+5, model.Value)
+		assert.Equal(t, initialModels[i].ID1, model.ID1)
+		assert.Equal(t, initialModels[i].ID2, model.ID2)
+	}
+}

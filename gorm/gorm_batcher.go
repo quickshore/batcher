@@ -96,10 +96,10 @@ func batchUpdate[T any](db *gorm.DB) func([][]UpdateItem[T]) error {
 				item := updateItem.Item
 				updateFields := updateItem.UpdateFields
 
-				primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
-				if primaryKey == "" {
+				primaryKeys, primaryKeyValues := getPrimaryKeyAndValues(item)
+				if len(primaryKeys) == 0 {
 					tx.Rollback()
-					return fmt.Errorf("primary key not found for item")
+					return fmt.Errorf("no primary key found for item")
 				}
 
 				updateMap := make(map[string]interface{})
@@ -117,7 +117,12 @@ func batchUpdate[T any](db *gorm.DB) func([][]UpdateItem[T]) error {
 					}
 				}
 
-				if err := tx.Model(new(T)).Where(primaryKey+" = ?", primaryKeyValue).Updates(updateMap).Error; err != nil {
+				query := tx.Model(new(T))
+				for i, key := range primaryKeys {
+					query = query.Where(key+" = ?", primaryKeyValues[i])
+				}
+
+				if err := query.Updates(updateMap).Error; err != nil {
 					tx.Rollback()
 					return err
 				}
@@ -138,8 +143,8 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-// getPrimaryKeyAndValue uses reflection to find the primary key field and its value
-func getPrimaryKeyAndValue(item interface{}) (string, interface{}) {
+// getPrimaryKeyAndValues uses reflection to find the primary key fields and their values
+func getPrimaryKeyAndValues(item interface{}) ([]string, []interface{}) {
 	t := reflect.TypeOf(item)
 	v := reflect.ValueOf(item)
 
@@ -149,12 +154,16 @@ func getPrimaryKeyAndValue(item interface{}) (string, interface{}) {
 		v = v.Elem()
 	}
 
+	var keys []string
+	var values []interface{}
+
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if tag := field.Tag.Get("gorm"); strings.Contains(tag, "primaryKey") {
-			return field.Name, v.Field(i).Interface()
+			keys = append(keys, field.Name)
+			values = append(values, v.Field(i).Interface())
 		}
 	}
 
-	return "", nil
+	return keys, values
 }
