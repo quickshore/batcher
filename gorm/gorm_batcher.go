@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"atlasgurus/batcher/batcher"
+	"github.com/atlasgurus/batcher/batcher"
 	"gorm.io/gorm"
 )
 
