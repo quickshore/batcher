@@ -1,4 +1,4 @@
-name: Go
+name: Go Multi-DB Tests
 
 on:
   push:
@@ -7,8 +7,13 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      matrix:
+        db: [mysql, postgres, sqlite]
+        go-version: ['1.20']
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
 
     services:
       mysql:
@@ -19,17 +24,43 @@ jobs:
         ports:
           - 3306:3306
         options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+        if: ${{ matrix.db == 'mysql' }}
+      
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+        if: ${{ matrix.db == 'postgres' }}
 
     steps:
     - uses: actions/checkout@v4
-    - name: Set up Go
+    - name: Set up Go ${{ matrix.go-version }}
       uses: actions/setup-go@v4
       with:
-        go-version: '1.20'
+        go-version: ${{ matrix.go-version }}
+
+    - name: Set up SQLite
+      if: ${{ matrix.db == 'sqlite' }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 libsqlite3-dev
+
     - name: Set DSN environment variable
       run: |
-        echo "DSN=root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true" >> $GITHUB_ENV
+        if [ "${{ matrix.db }}" = "mysql" ]; then
+          echo "DSN=root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true" >> $GITHUB_ENV
+        elif [ "${{ matrix.db }}" = "postgres" ]; then
+          echo "DSN=postgres://postgres:postgrespassword@localhost:5432/testdb?sslmode=disable" >> $GITHUB_ENV
+        elif [ "${{ matrix.db }}" = "sqlite" ]; then
+          echo "DSN=file:test.db?cache=shared&mode=memory" >> $GITHUB_ENV
+        fi
+
     - name: Build
       run: go build -v ./...
+
     - name: Test
       run: go test -v ./...
