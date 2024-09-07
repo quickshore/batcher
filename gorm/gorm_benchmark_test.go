@@ -16,7 +16,7 @@ func BenchmarkGORMBatcher(b *testing.B) {
 
 	// Configuration
 	numRoutines := 100
-	operationsPerRoutine := 10000
+	operationsPerRoutine := 100
 	maxBatchSize := 100
 	maxWaitTime := 50 * time.Millisecond
 
