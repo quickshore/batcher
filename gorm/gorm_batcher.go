@@ -72,13 +72,6 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 			return tx.Error
 		}
 
-		// Prepare the update statement
-		updateStmt := tx.Model(new(T))
-		if len(updateFields) > 0 {
-			updateStmt = updateStmt.Select(updateFields)
-		}
-
-		// Perform batch update
 		for _, item := range items {
 			// Get the primary key field and value
 			primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
@@ -87,10 +80,22 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 				return fmt.Errorf("primary key not found for item")
 			}
 
-			// Add WHERE clause for the primary key
-			if err := updateStmt.Where(primaryKey+" = ?", primaryKeyValue).Updates(item).Error; err != nil {
-				tx.Rollback()
-				return err
+			// Prepare the update statement
+			updateStmt := tx.Model(new(T)).Where(primaryKey+" = ?", primaryKeyValue)
+
+			if len(updateFields) > 0 {
+				// If specific fields are specified, use Select and Updates
+				updateStmt = updateStmt.Select(updateFields)
+				if err := updateStmt.Updates(item).Error; err != nil {
+					tx.Rollback()
+					return err
+				}
+			} else {
+				// If no specific fields are specified, use Save to update all fields
+				if err := updateStmt.Save(item).Error; err != nil {
+					tx.Rollback()
+					return err
+				}
 			}
 		}
 
