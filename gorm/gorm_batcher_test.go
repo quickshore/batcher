@@ -226,7 +226,7 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 
 	db.Exec("DELETE FROM test_models")
 
-	initialModels := []*TestModel{
+	initialModels := []TestModel{
 		{Name: "Test 1", Value: 10},
 		{Name: "Test 2", Value: 20},
 		{Name: "Test 3", Value: 30},
@@ -236,7 +236,7 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	for i, model := range initialModels {
 		model.Name = fmt.Sprintf("Should Not Update %d", i+1)
 		model.Value += 10 // This is correct, we're adding 10
-		err := batcher.Update(model)
+		err := batcher.Update(&model)
 		assert.NoError(t, err)
 	}
 
