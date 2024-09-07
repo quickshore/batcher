@@ -11,16 +11,19 @@ import (
 	"gorm.io/gorm"
 )
 
+// DBProvider is a function type that returns the current database connection and an error
+type DBProvider func() (*gorm.DB, error)
+
 // InsertBatcher is a GORM batcher for batch inserts
 type InsertBatcher[T any] struct {
-	db      *gorm.DB
-	batcher *batcher.BatchProcessor[[]T]
+	dbProvider DBProvider
+	batcher    *batcher.BatchProcessor[[]T]
 }
 
 // UpdateBatcher is a GORM batcher for batch updates
 type UpdateBatcher[T any] struct {
-	db      *gorm.DB
-	batcher *batcher.BatchProcessor[[]UpdateItem[T]]
+	dbProvider DBProvider
+	batcher    *batcher.BatchProcessor[[]UpdateItem[T]]
 }
 
 type UpdateItem[T any] struct {
@@ -29,18 +32,18 @@ type UpdateItem[T any] struct {
 }
 
 // NewInsertBatcher creates a new GORM insert batcher
-func NewInsertBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *InsertBatcher[T] {
+func NewInsertBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *InsertBatcher[T] {
 	return &InsertBatcher[T]{
-		db:      db,
-		batcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchInsert[T](db)),
+		dbProvider: dbProvider,
+		batcher:    batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchInsert[T](dbProvider)),
 	}
 }
 
 // NewUpdateBatcher creates a new GORM update batcher
-func NewUpdateBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *UpdateBatcher[T] {
+func NewUpdateBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *UpdateBatcher[T] {
 	return &UpdateBatcher[T]{
-		db:      db,
-		batcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](db)),
+		dbProvider: dbProvider,
+		batcher:    batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](dbProvider)),
 	}
 }
 
@@ -58,10 +61,15 @@ func (b *UpdateBatcher[T]) Update(items []T, updateFields []string) error {
 	return b.batcher.SubmitAndWait(updateItems)
 }
 
-func batchInsert[T any](db *gorm.DB) func([][]T) error {
+func batchInsert[T any](dbProvider DBProvider) func([][]T) error {
 	return func(batches [][]T) error {
 		if len(batches) == 0 {
 			return nil
+		}
+
+		db, err := dbProvider()
+		if err != nil {
+			return fmt.Errorf("failed to get database connection: %w", err)
 		}
 
 		tx := db.Begin()
@@ -80,10 +88,15 @@ func batchInsert[T any](db *gorm.DB) func([][]T) error {
 	}
 }
 
-func batchUpdate[T any](db *gorm.DB) func([][]UpdateItem[T]) error {
+func batchUpdate[T any](dbProvider DBProvider) func([][]UpdateItem[T]) error {
 	return func(batches [][]UpdateItem[T]) error {
 		if len(batches) == 0 {
 			return nil
+		}
+
+		db, err := dbProvider()
+		if err != nil {
+			return fmt.Errorf("failed to get database connection: %w", err)
 		}
 
 		tx := db.Begin()
@@ -96,10 +109,10 @@ func batchUpdate[T any](db *gorm.DB) func([][]UpdateItem[T]) error {
 				item := updateItem.Item
 				updateFields := updateItem.UpdateFields
 
-				primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
-				if primaryKey == "" {
+				primaryKeys, primaryKeyValues := getPrimaryKeyAndValues(item)
+				if len(primaryKeys) == 0 {
 					tx.Rollback()
-					return fmt.Errorf("primary key not found for item")
+					return fmt.Errorf("no primary key found for item")
 				}
 
 				updateMap := make(map[string]interface{})
@@ -117,7 +130,12 @@ func batchUpdate[T any](db *gorm.DB) func([][]UpdateItem[T]) error {
 					}
 				}
 
-				if err := tx.Model(new(T)).Where(primaryKey+" = ?", primaryKeyValue).Updates(updateMap).Error; err != nil {
+				query := tx.Model(new(T))
+				for i, key := range primaryKeys {
+					query = query.Where(key+" = ?", primaryKeyValues[i])
+				}
+
+				if err := query.Updates(updateMap).Error; err != nil {
 					tx.Rollback()
 					return err
 				}
@@ -128,18 +146,7 @@ func batchUpdate[T any](db *gorm.DB) func([][]UpdateItem[T]) error {
 	}
 }
 
-// Helper function to check if a string is in a slice
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
-// getPrimaryKeyAndValue uses reflection to find the primary key field and its value
-func getPrimaryKeyAndValue(item interface{}) (string, interface{}) {
+func getPrimaryKeyAndValues(item interface{}) ([]string, []interface{}) {
 	t := reflect.TypeOf(item)
 	v := reflect.ValueOf(item)
 
@@ -149,12 +156,25 @@ func getPrimaryKeyAndValue(item interface{}) (string, interface{}) {
 		v = v.Elem()
 	}
 
+	var keys []string
+	var values []interface{}
+
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		if tag := field.Tag.Get("gorm"); strings.Contains(tag, "primaryKey") {
-			return field.Name, v.Field(i).Interface()
+			keys = append(keys, field.Name)
+			values = append(values, v.Field(i).Interface())
 		}
 	}
 
-	return "", nil
+	return keys, values
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

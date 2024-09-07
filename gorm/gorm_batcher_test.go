@@ -22,6 +22,13 @@ type TestModel struct {
 	Value int    `gorm:"type:int"`
 }
 
+type CompositeKeyModel struct {
+	ID1   int    `gorm:"primaryKey"`
+	ID2   string `gorm:"primaryKey"`
+	Name  string
+	Value int
+}
+
 var (
 	db      *gormv2.DB
 	dialect string
@@ -60,7 +67,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// Migrate the schema
-	err = db.AutoMigrate(&TestModel{})
+	err = db.AutoMigrate(&TestModel{}, &CompositeKeyModel{})
 	if err != nil {
 		panic(fmt.Sprintf("failed to migrate database: %v", err))
 	}
@@ -74,11 +81,17 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func getDBProvider() DBProvider {
+	return func() (*gormv2.DB, error) {
+		return db, nil
+	}
+}
+
 func TestInsertBatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewInsertBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx)
+	batcher := NewInsertBatcher[*TestModel](getDBProvider(), 3, 100*time.Millisecond, ctx)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -120,7 +133,7 @@ func TestUpdateBatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx)
+	batcher := NewUpdateBatcher[*TestModel](getDBProvider(), 3, 100*time.Millisecond, ctx)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -167,8 +180,8 @@ func TestConcurrentOperations(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	insertBatcher := NewInsertBatcher[*TestModel](db, 10, 100*time.Millisecond, ctx)
-	updateBatcher := NewUpdateBatcher[*TestModel](db, 10, 100*time.Millisecond, ctx)
+	insertBatcher := NewInsertBatcher[*TestModel](getDBProvider(), 10, 100*time.Millisecond, ctx)
+	updateBatcher := NewUpdateBatcher[*TestModel](getDBProvider(), 10, 100*time.Millisecond, ctx)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -221,7 +234,7 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx)
+	batcher := NewUpdateBatcher[*TestModel](getDBProvider(), 3, 100*time.Millisecond, ctx)
 
 	db.Exec("DELETE FROM test_models")
 
@@ -258,7 +271,7 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx)
+	batcher := NewUpdateBatcher[*TestModel](getDBProvider(), 3, 100*time.Millisecond, ctx)
 
 	db.Exec("DELETE FROM test_models")
 
@@ -288,5 +301,45 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name, "Name should not have been updated")
 		assert.Equal(t, initialModels[i].Value+10, model.Value, "Value should have been updated")
+	}
+}
+
+func TestUpdateBatcher_CompositeKey(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	batcher := NewUpdateBatcher[*CompositeKeyModel](getDBProvider(), 3, 100*time.Millisecond, ctx)
+
+	db.Exec("DELETE FROM composite_key_models")
+
+	initialModels := []CompositeKeyModel{
+		{ID1: 1, ID2: "A", Name: "Test 1", Value: 10},
+		{ID1: 1, ID2: "B", Name: "Test 2", Value: 20},
+		{ID1: 2, ID2: "A", Name: "Test 3", Value: 30},
+	}
+	db.Create(&initialModels)
+
+	updatedModels := make([]*CompositeKeyModel, len(initialModels))
+	for i := range initialModels {
+		updatedModels[i] = &CompositeKeyModel{
+			ID1:   initialModels[i].ID1,
+			ID2:   initialModels[i].ID2,
+			Name:  fmt.Sprintf("Updated %d", i+1),
+			Value: initialModels[i].Value + 5,
+		}
+	}
+
+	err := batcher.Update(updatedModels, []string{"Name", "Value"})
+	assert.NoError(t, err)
+
+	var finalModels []CompositeKeyModel
+	db.Find(&finalModels)
+	assert.Len(t, finalModels, 3)
+	for i, model := range finalModels {
+		fmt.Printf("Model after update: %+v\n", model)
+		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
+		assert.Equal(t, initialModels[i].Value+5, model.Value)
+		assert.Equal(t, initialModels[i].ID1, model.ID1)
+		assert.Equal(t, initialModels[i].ID2, model.ID2)
 	}
 }
