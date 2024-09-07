@@ -73,6 +73,8 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 		updateStmt := tx.Model(new(T))
 		if len(updateFields) > 0 {
 			updateStmt = updateStmt.Select(updateFields)
+		} else {
+			updateStmt = updateStmt.Select("*")
 		}
 
 		// Perform batch update
