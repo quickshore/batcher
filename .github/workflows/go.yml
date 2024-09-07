@@ -17,7 +17,7 @@ jobs:
           MYSQL_DATABASE: testdb
         ports:
           - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=30s --health-timeout=5s --health-retries=3
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
     steps:
       - uses: actions/checkout@v4
@@ -34,12 +34,21 @@ jobs:
       - name: Test
         run: go test -v ./...
       - name: Run Benchmark
-        run: go test -bench=BenchmarkGORMBatcher -benchtime=30s ./... > mysql_benchmark.txt
-      - name: Upload MySQL benchmark results
+        run: |
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          cat benchmark_output.txt
+          if [ $? -ne 0 ]; then
+            echo "Benchmark failed. See output above."
+            exit 1
+          fi
+        env:
+          DSN: ${{ env.DSN }}
+          DIALECT: ${{ env.DIALECT }}
+      - name: Upload benchmark results
         uses: actions/upload-artifact@v3
         with:
           name: mysql-benchmark-results
-          path: mysql_benchmark.txt
+          path: benchmark_output.txt
 
   test-postgres:
     runs-on: ubuntu-latest
@@ -51,7 +60,7 @@ jobs:
           POSTGRES_DB: testdb
         ports:
           - 5432:5432
-        options: --health-cmd pg_isready --health-interval 30s --health-timeout 5s --health-retries 5
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
@@ -68,12 +77,21 @@ jobs:
       - name: Test
         run: go test -v ./...
       - name: Run Benchmark
-        run: go test -bench=BenchmarkGORMBatcher -benchtime=30s ./... > postgres_benchmark.txt
-      - name: Upload Postgres benchmark results
+        run: |
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          cat benchmark_output.txt
+          if [ $? -ne 0 ]; then
+            echo "Benchmark failed. See output above."
+            exit 1
+          fi
+        env:
+          DSN: ${{ env.DSN }}
+          DIALECT: ${{ env.DIALECT }}
+      - name: Upload benchmark results
         uses: actions/upload-artifact@v3
         with:
           name: postgres-benchmark-results
-          path: postgres_benchmark.txt
+          path: benchmark_output.txt
 
   test-sqlite:
     runs-on: ubuntu-latest
@@ -97,9 +115,18 @@ jobs:
       - name: Test
         run: go test -v ./...
       - name: Run Benchmark
-        run: go test -bench=BenchmarkGORMBatcher -benchtime=30s ./... > sqlite_benchmark.txt
-      - name: Upload SQLite benchmark results
+        run: |
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=30s ./... > benchmark_output.txt 2>&1
+          cat benchmark_output.txt
+          if [ $? -ne 0 ]; then
+            echo "Benchmark failed. See output above."
+            exit 1
+          fi
+        env:
+          DSN: ${{ env.DSN }}
+          DIALECT: ${{ env.DIALECT }}
+      - name: Upload benchmark results
         uses: actions/upload-artifact@v3
         with:
           name: sqlite-benchmark-results
-          path: sqlite_benchmark.txt
+          path: benchmark_output.txt
