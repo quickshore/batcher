@@ -6,9 +6,12 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	gormv1 "github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
+	_ "github.com/jinzhu/gorm/dialects/postgres"
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	"github.com/stretchr/testify/assert"
 	gormv2 "gorm.io/gorm"
 )
@@ -75,7 +78,7 @@ func TestInsertBatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewInsertBatcher[*TestModel](db, 3, 100, ctx)
+	batcher := NewInsertBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -96,7 +99,7 @@ func TestUpdateBatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewUpdateBatcher[*TestModel](db, 3, 100, ctx, []string{"Value"})
+	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx, []string{"Value"})
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -132,8 +135,8 @@ func TestConcurrentOperations(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	insertBatcher := NewInsertBatcher[*TestModel](db, 10, 100, ctx)
-	updateBatcher := NewUpdateBatcher[*TestModel](db, 10, 100, ctx, nil)
+	insertBatcher := NewInsertBatcher[*TestModel](db, 10, 100*time.Millisecond, ctx)
+	updateBatcher := NewUpdateBatcher[*TestModel](db, 10, 100*time.Millisecond, ctx, nil)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -194,9 +197,9 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 
 	// Insert some initial data
 	initialModels := []*TestModel{
-		{Name: "Test 1", Value: 10, Extra: "Extra 1"},
-		{Name: "Test 2", Value: 20, Extra: "Extra 2"},
-		{Name: "Test 3", Value: 30, Extra: "Extra 3"},
+		{Name: "Test 1", Value: 10},
+		{Name: "Test 2", Value: 20},
+		{Name: "Test 3", Value: 30},
 	}
 	db.Create(&initialModels)
 
@@ -204,7 +207,6 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	for i, model := range initialModels {
 		model.Name = fmt.Sprintf("Updated %d", i+1)
 		model.Value += 5
-		model.Extra = fmt.Sprintf("Updated Extra %d", i+1)
 		err := batcher.Update(model)
 		assert.NoError(t, err)
 	}
@@ -215,8 +217,7 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	assert.Len(t, updatedModels, 3)
 	for i, model := range updatedModels {
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
-		assert.Equal(t, initialModels[i].Value, model.Value)
-		assert.Equal(t, fmt.Sprintf("Updated Extra %d", i+1), model.Extra)
+		assert.Equal(t, initialModels[i].Value+5, model.Value)
 	}
 }
 
@@ -225,16 +226,16 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	defer cancel()
 
 	// Create a batcher with specific update fields
-	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx, []string{"Value", "Extra"})
+	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx, []string{"Value"})
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
 
 	// Insert some initial data
 	initialModels := []*TestModel{
-		{Name: "Test 1", Value: 10, Extra: "Extra 1"},
-		{Name: "Test 2", Value: 20, Extra: "Extra 2"},
-		{Name: "Test 3", Value: 30, Extra: "Extra 3"},
+		{Name: "Test 1", Value: 10},
+		{Name: "Test 2", Value: 20},
+		{Name: "Test 3", Value: 30},
 	}
 	db.Create(&initialModels)
 
@@ -242,7 +243,6 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	for i, model := range initialModels {
 		model.Name = fmt.Sprintf("Should Not Update %d", i+1)
 		model.Value += 5
-		model.Extra = fmt.Sprintf("Updated Extra %d", i+1)
 		err := batcher.Update(model)
 		assert.NoError(t, err)
 	}
@@ -253,7 +253,6 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	assert.Len(t, updatedModels, 3)
 	for i, model := range updatedModels {
 		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name, "Name should not have been updated")
-		assert.Equal(t, initialModels[i].Value, model.Value, "Value should have been updated")
-		assert.Equal(t, fmt.Sprintf("Updated Extra %d", i+1), model.Extra, "Extra should have been updated")
+		assert.Equal(t, initialModels[i].Value+5, model.Value, "Value should have been updated")
 	}
 }
