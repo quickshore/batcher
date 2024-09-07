@@ -66,6 +66,9 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 			return nil
 		}
 
+		fmt.Printf("Batch updating %d items\n", len(items))
+		fmt.Printf("Update fields: %v\n", updateFields)
+
 		// Start a transaction
 		tx := db.Begin()
 		if tx.Error != nil {
@@ -73,6 +76,8 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 		}
 
 		for _, item := range items {
+			fmt.Printf("Updating item: %+v\n", item)
+
 			// Get the primary key field and value
 			primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
 			if primaryKey == "" {
@@ -80,27 +85,44 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 				return fmt.Errorf("primary key not found for item")
 			}
 
-			// Prepare the update statement
-			updateStmt := tx.Model(new(T)).Where(primaryKey+" = ?", primaryKeyValue)
+			// Create a map of fields to update
+			updateMap := make(map[string]interface{})
+			v := reflect.ValueOf(item)
+			t := v.Type()
+			if t.Kind() == reflect.Ptr {
+				v = v.Elem()
+				t = v.Type()
+			}
 
-			if len(updateFields) > 0 {
-				// If specific fields are specified, use Select and Updates
-				updateStmt = updateStmt.Select(updateFields)
-				if err := updateStmt.Updates(item).Error; err != nil {
-					tx.Rollback()
-					return err
-				}
-			} else {
-				// If no specific fields are specified, use Save to update all fields
-				if err := updateStmt.Save(item).Error; err != nil {
-					tx.Rollback()
-					return err
+			for i := 0; i < t.NumField(); i++ {
+				field := t.Field(i)
+				if len(updateFields) == 0 || contains(updateFields, field.Name) {
+					updateMap[field.Name] = v.Field(i).Interface()
 				}
 			}
+
+			// Perform the update
+			result := tx.Model(new(T)).Where(primaryKey+" = ?", primaryKeyValue).Updates(updateMap)
+			if result.Error != nil {
+				tx.Rollback()
+				return result.Error
+			}
+
+			fmt.Printf("Rows affected: %d\n", result.RowsAffected)
 		}
 
 		return tx.Commit().Error
 	}
+}
+
+// Helper function to check if a string is in a slice
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // getPrimaryKeyAndValue uses reflection to find the primary key field and its value
