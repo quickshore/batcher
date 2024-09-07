@@ -262,7 +262,6 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	assert.Len(t, finalModels, 3)
 
 	for i, model := range finalModels {
-		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
 		assert.Equal(t, initialModels[i].Value+5, model.Value)
 	}
@@ -300,7 +299,6 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	assert.Len(t, finalModels, 3)
 
 	for i, model := range finalModels {
-		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name, "Name should not have been updated")
 		assert.Equal(t, initialModels[i].Value+10, model.Value, "Value should have been updated")
 	}
@@ -339,7 +337,6 @@ func TestUpdateBatcher_CompositeKey(t *testing.T) {
 	assert.Len(t, finalModels, 3)
 
 	for i, model := range finalModels {
-		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
 		assert.Equal(t, initialModels[i].Value+5, model.Value)
 		assert.Equal(t, initialModels[i].ID1, model.ID1)
