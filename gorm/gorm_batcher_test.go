@@ -19,33 +19,47 @@ type TestModel struct {
 	Value int    `gorm:"type:int"`
 }
 
-var db *gormv2.DB
+var (
+	db      *gormv2.DB
+	dialect string
+)
 
 func TestMain(m *testing.M) {
-	// Get the DSN from environment variable
+	// Get the DSN and dialect from environment variables
 	dsn := os.Getenv("DSN")
+	dialect = os.Getenv("DIALECT")
 	if dsn == "" {
-		panic("DSN environment variable is not set")
+		panic("DSN environment variable must be set")
+	}
+	if dialect == "" {
+		dialect = "mysql" // Default to MySQL if DIALECT is not set
 	}
 
-	// Open a GORM v1 connection
-	v1DB, err := gormv1.Open("mysql", dsn)
+	var err error
+	var v1DB *gormv1.DB
+
+	// Open a GORM v1 connection based on the dialect
+	switch dialect {
+	case "mysql", "postgres", "sqlite3":
+		v1DB, err = gormv1.Open(dialect, dsn)
+	default:
+		panic("Unsupported dialect: " + dialect)
+	}
+
 	if err != nil {
-		panic("failed to connect database using GORM v1")
+		panic(fmt.Sprintf("failed to connect database: %v", err))
 	}
 
 	// Convert to GORM v2
-	v2DB, err := GormV1ToV2Adapter(v1DB)
+	db, err = GormV1ToV2Adapter(v1DB)
 	if err != nil {
-		panic("failed to convert GORM v1 to v2")
+		panic(fmt.Sprintf("failed to convert GORM v1 to v2: %v", err))
 	}
-
-	db = v2DB
 
 	// Migrate the schema
 	err = db.AutoMigrate(&TestModel{})
 	if err != nil {
-		panic("failed to migrate database")
+		panic(fmt.Sprintf("failed to migrate database: %v", err))
 	}
 
 	// Run the tests
