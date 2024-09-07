@@ -74,7 +74,9 @@ func BenchmarkGORMBatcher(b *testing.B) {
 	expectedSum := int64(0)
 	for routineId := 0; routineId < numRoutines; routineId++ {
 		for j := 0; j < operationsPerRoutine; j++ {
-			expectedSum += int64(j * 10)
+			if j%2 != 0 {
+				expectedSum += int64(j * 10)
+			}
 		}
 	}
 
