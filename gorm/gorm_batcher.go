@@ -11,16 +11,19 @@ import (
 	"gorm.io/gorm"
 )
 
+// DBProvider is a function type that returns the current database connection and an error
+type DBProvider func() (*gorm.DB, error)
+
 // InsertBatcher is a GORM batcher for batch inserts
 type InsertBatcher[T any] struct {
-	db      *gorm.DB
-	batcher *batcher.BatchProcessor[[]T]
+	dbProvider DBProvider
+	batcher    *batcher.BatchProcessor[[]T]
 }
 
 // UpdateBatcher is a GORM batcher for batch updates
 type UpdateBatcher[T any] struct {
-	db      *gorm.DB
-	batcher *batcher.BatchProcessor[[]UpdateItem[T]]
+	dbProvider DBProvider
+	batcher    *batcher.BatchProcessor[[]UpdateItem[T]]
 }
 
 type UpdateItem[T any] struct {
@@ -29,18 +32,18 @@ type UpdateItem[T any] struct {
 }
 
 // NewInsertBatcher creates a new GORM insert batcher
-func NewInsertBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *InsertBatcher[T] {
+func NewInsertBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *InsertBatcher[T] {
 	return &InsertBatcher[T]{
-		db:      db,
-		batcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchInsert[T](db)),
+		dbProvider: dbProvider,
+		batcher:    batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchInsert[T](dbProvider)),
 	}
 }
 
 // NewUpdateBatcher creates a new GORM update batcher
-func NewUpdateBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *UpdateBatcher[T] {
+func NewUpdateBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *UpdateBatcher[T] {
 	return &UpdateBatcher[T]{
-		db:      db,
-		batcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](db)),
+		dbProvider: dbProvider,
+		batcher:    batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](dbProvider)),
 	}
 }
 
@@ -58,10 +61,15 @@ func (b *UpdateBatcher[T]) Update(items []T, updateFields []string) error {
 	return b.batcher.SubmitAndWait(updateItems)
 }
 
-func batchInsert[T any](db *gorm.DB) func([][]T) error {
+func batchInsert[T any](dbProvider DBProvider) func([][]T) error {
 	return func(batches [][]T) error {
 		if len(batches) == 0 {
 			return nil
+		}
+
+		db, err := dbProvider()
+		if err != nil {
+			return fmt.Errorf("failed to get database connection: %w", err)
 		}
 
 		tx := db.Begin()
@@ -80,10 +88,15 @@ func batchInsert[T any](db *gorm.DB) func([][]T) error {
 	}
 }
 
-func batchUpdate[T any](db *gorm.DB) func([][]UpdateItem[T]) error {
+func batchUpdate[T any](dbProvider DBProvider) func([][]UpdateItem[T]) error {
 	return func(batches [][]UpdateItem[T]) error {
 		if len(batches) == 0 {
 			return nil
+		}
+
+		db, err := dbProvider()
+		if err != nil {
+			return fmt.Errorf("failed to get database connection: %w", err)
 		}
 
 		tx := db.Begin()
