@@ -97,8 +97,6 @@ func TestInsertBatcher(t *testing.T) {
 	err := batcher.Insert(multipleItems...)
 	assert.NoError(t, err)
 
-	time.Sleep(200 * time.Millisecond)
-
 	// Check if all items were inserted
 	var count int64
 	db.Model(&TestModel{}).Count(&count)
@@ -150,8 +148,6 @@ func TestUpdateBatcher(t *testing.T) {
 	}
 	err := batcher.Update([]*TestModel{initialModels[3], initialModels[4]}, []string{"Value"})
 	assert.NoError(t, err)
-
-	time.Sleep(200 * time.Millisecond)
 
 	// Check if all items were updated correctly
 	var updatedModels []TestModel
@@ -248,8 +244,6 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	err := batcher.Update(updatedModels, nil) // Update all fields
 	assert.NoError(t, err)
 
-	time.Sleep(200 * time.Millisecond)
-
 	var finalModels []TestModel
 	db.Find(&finalModels)
 	assert.Len(t, finalModels, 3)
@@ -286,8 +280,6 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 
 	err := batcher.Update(updatedModels, []string{"Value"})
 	assert.NoError(t, err)
-
-	time.Sleep(200 * time.Millisecond)
 
 	var finalModels []TestModel
 	db.Find(&finalModels)
