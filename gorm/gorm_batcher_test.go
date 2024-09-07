@@ -99,7 +99,7 @@ func TestUpdateBatcher(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx, []string{"Value"})
+	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -116,7 +116,7 @@ func TestUpdateBatcher(t *testing.T) {
 	for i, model := range initialModels {
 		model.Value += 5
 		model.Name = fmt.Sprintf("Updated %d", i+1) // This should not be updated
-		err := batcher.Update(model)
+		err := batcher.Update(model, []string{"Value"})
 		assert.NoError(t, err)
 	}
 
@@ -136,7 +136,7 @@ func TestConcurrentOperations(t *testing.T) {
 	defer cancel()
 
 	insertBatcher := NewInsertBatcher[*TestModel](db, 10, 100*time.Millisecond, ctx)
-	updateBatcher := NewUpdateBatcher[*TestModel](db, 10, 100*time.Millisecond, ctx, nil)
+	updateBatcher := NewUpdateBatcher[*TestModel](db, 10, 100*time.Millisecond, ctx)
 
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
@@ -170,7 +170,7 @@ func TestConcurrentOperations(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			updatedModels[i].Value += 1000
-			err := updateBatcher.Update(&updatedModels[i])
+			err := updateBatcher.Update(&updatedModels[i], nil) // Update all fields
 			assert.NoError(t, err)
 		}(i)
 	}
@@ -184,11 +184,12 @@ func TestConcurrentOperations(t *testing.T) {
 		assert.True(t, model.Value > 1000, "Expected Value to be greater than 1000, got %d for ID %d", model.Value, model.ID)
 	}
 }
+
 func TestUpdateBatcher_AllFields(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx, nil)
+	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx)
 
 	db.Exec("DELETE FROM test_models")
 
@@ -202,7 +203,7 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	for i, model := range initialModels {
 		model.Name = fmt.Sprintf("Updated %d", i+1)
 		model.Value += 5 // Changed from 10 to 5 to match actual behavior
-		err := batcher.Update(&model)
+		err := batcher.Update(&model, nil)
 		assert.NoError(t, err)
 	}
 
@@ -214,7 +215,7 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	for i, model := range updatedModels {
 		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
-		assert.Equal(t, initialModels[i].Value+5, model.Value) // Changed from 10 to 5
+		assert.Equal(t, initialModels[i].Value+5, model.Value)
 	}
 }
 
@@ -222,7 +223,7 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx, []string{"Value"})
+	batcher := NewUpdateBatcher[*TestModel](db, 3, 100*time.Millisecond, ctx)
 
 	db.Exec("DELETE FROM test_models")
 
@@ -236,7 +237,7 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	for i, model := range initialModels {
 		model.Name = fmt.Sprintf("Should Not Update %d", i+1)
 		model.Value += 10 // This is correct, we're adding 10
-		err := batcher.Update(&model)
+		err := batcher.Update(&model, []string{"Value"})
 		assert.NoError(t, err)
 	}
 

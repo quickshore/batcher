@@ -19,9 +19,13 @@ type InsertBatcher[T any] struct {
 
 // UpdateBatcher is a GORM batcher for batch updates
 type UpdateBatcher[T any] struct {
-	db           *gorm.DB
-	batcher      *batcher.BatchProcessor[T]
-	updateFields []string
+	db      *gorm.DB
+	batcher *batcher.BatchProcessor[UpdateItem[T]]
+}
+
+type UpdateItem[T any] struct {
+	Item         T
+	UpdateFields []string
 }
 
 // NewInsertBatcher creates a new GORM insert batcher
@@ -33,11 +37,10 @@ func NewInsertBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Dur
 }
 
 // NewUpdateBatcher creates a new GORM update batcher
-func NewUpdateBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context, updateFields []string) *UpdateBatcher[T] {
+func NewUpdateBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *UpdateBatcher[T] {
 	return &UpdateBatcher[T]{
-		db:           db,
-		batcher:      batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](db, updateFields)),
-		updateFields: updateFields,
+		db:      db,
+		batcher: batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](db)),
 	}
 }
 
@@ -47,8 +50,8 @@ func (b *InsertBatcher[T]) Insert(item T) error {
 }
 
 // Update submits an item for batch update
-func (b *UpdateBatcher[T]) Update(item T) error {
-	return b.batcher.SubmitAndWait(item)
+func (b *UpdateBatcher[T]) Update(item T, updateFields []string) error {
+	return b.batcher.SubmitAndWait(UpdateItem[T]{Item: item, UpdateFields: updateFields})
 }
 
 func batchInsert[T any](db *gorm.DB) func([]T) error {
@@ -60,8 +63,8 @@ func batchInsert[T any](db *gorm.DB) func([]T) error {
 	}
 }
 
-func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
-	return func(items []T) error {
+func batchUpdate[T any](db *gorm.DB) func([]UpdateItem[T]) error {
+	return func(items []UpdateItem[T]) error {
 		if len(items) == 0 {
 			return nil
 		}
@@ -72,7 +75,10 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 			return tx.Error
 		}
 
-		for _, item := range items {
+		for _, updateItem := range items {
+			item := updateItem.Item
+			updateFields := updateItem.UpdateFields
+
 			// Get the primary key field and value
 			primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
 			if primaryKey == "" {
