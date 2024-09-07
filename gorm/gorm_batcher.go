@@ -48,14 +48,7 @@ func (b *InsertBatcher[T]) Insert(item T) error {
 
 // Update submits an item for batch update
 func (b *UpdateBatcher[T]) Update(item T) error {
-	fmt.Printf("Submitting item for update: %+v\n", item)
-	err := b.batcher.SubmitAndWait(item)
-	if err != nil {
-		fmt.Printf("Error updating item: %v\n", err)
-	} else {
-		fmt.Printf("Item update submitted successfully\n")
-	}
-	return err
+	return b.batcher.SubmitAndWait(item)
 }
 
 func batchInsert[T any](db *gorm.DB) func([]T) error {
@@ -73,9 +66,6 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 			return nil
 		}
 
-		fmt.Printf("Batch updating %d items\n", len(items))
-		fmt.Printf("Update fields: %v\n", updateFields)
-
 		// Start a transaction
 		tx := db.Begin()
 		if tx.Error != nil {
@@ -83,8 +73,6 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 		}
 
 		for _, item := range items {
-			fmt.Printf("Processing item: %+v\n", item)
-
 			// Get the primary key field and value
 			primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
 			if primaryKey == "" {
@@ -108,26 +96,12 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 				}
 			}
 
-			fmt.Printf("Update map: %+v\n", updateMap)
-
 			// Perform the update
 			result := tx.Model(new(T)).Where(primaryKey+" = ?", primaryKeyValue).Updates(updateMap)
 			if result.Error != nil {
 				tx.Rollback()
-				fmt.Printf("Error updating item: %v\n", result.Error)
 				return result.Error
 			}
-
-			fmt.Printf("Rows affected: %d\n", result.RowsAffected)
-
-			// Verify the update
-			var updatedItem T
-			if err := tx.Where(primaryKey+" = ?", primaryKeyValue).First(&updatedItem).Error; err != nil {
-				tx.Rollback()
-				fmt.Printf("Error fetching updated item: %v\n", err)
-				return err
-			}
-			fmt.Printf("Updated item in DB: %+v\n", updatedItem)
 		}
 
 		return tx.Commit().Error
