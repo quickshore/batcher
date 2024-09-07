@@ -2,6 +2,9 @@ package gorm
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/atlasgurus/batcher/batcher"
@@ -73,13 +76,19 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 		updateStmt := tx.Model(new(T))
 		if len(updateFields) > 0 {
 			updateStmt = updateStmt.Select(updateFields)
-		} else {
-			updateStmt = updateStmt.Select("*")
 		}
 
 		// Perform batch update
 		for _, item := range items {
-			if err := updateStmt.Updates(item).Error; err != nil {
+			// Get the primary key field and value
+			primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
+			if primaryKey == "" {
+				tx.Rollback()
+				return fmt.Errorf("primary key not found for item")
+			}
+
+			// Add WHERE clause for the primary key
+			if err := updateStmt.Where(primaryKey+" = ?", primaryKeyValue).Updates(item).Error; err != nil {
 				tx.Rollback()
 				return err
 			}
@@ -87,4 +96,25 @@ func batchUpdate[T any](db *gorm.DB, updateFields []string) func([]T) error {
 
 		return tx.Commit().Error
 	}
+}
+
+// getPrimaryKeyAndValue uses reflection to find the primary key field and its value
+func getPrimaryKeyAndValue(item interface{}) (string, interface{}) {
+	t := reflect.TypeOf(item)
+	v := reflect.ValueOf(item)
+
+	// If it's a pointer, get the underlying element
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+		v = v.Elem()
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if tag := field.Tag.Get("gorm"); strings.Contains(tag, "primaryKey") {
+			return field.Name, v.Field(i).Interface()
+		}
+	}
+
+	return "", nil
 }
