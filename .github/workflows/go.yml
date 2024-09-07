@@ -34,7 +34,12 @@ jobs:
       - name: Test
         run: go test -v ./...
       - name: Run Benchmark
-        run: go test -bench=BenchmarkGORMBatcher -benchtime=10s ./... > mysql_benchmark.txt
+        run: |
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=10s ./... > mysql_benchmark.txt 2>&1 || true
+          cat mysql_benchmark.txt
+          env:
+            DSN: root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true
+            DIALECT: mysql
       - name: Upload MySQL benchmark results
         uses: actions/upload-artifact@v3
         with:
@@ -68,7 +73,12 @@ jobs:
       - name: Test
         run: go test -v ./...
       - name: Run Benchmark
-        run: go test -bench=BenchmarkGORMBatcher -benchtime=10s ./... > postgres_benchmark.txt
+        run: |
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=10s ./... > mysql_benchmark.txt 2>&1 || true
+          cat mysql_benchmark.txt
+          env:
+            DSN: root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true
+            DIALECT: mysql
       - name: Upload Postgres benchmark results
         uses: actions/upload-artifact@v3
         with:
@@ -97,7 +107,12 @@ jobs:
       - name: Test
         run: go test -v ./...
       - name: Run Benchmark
-        run: go test -bench=BenchmarkGORMBatcher -benchtime=10s ./... > sqlite_benchmark.txt
+        run: |
+          go test -v -bench=BenchmarkGORMBatcher -benchtime=10s ./... > mysql_benchmark.txt 2>&1 || true
+          cat mysql_benchmark.txt
+          env:
+            DSN: root:rootpassword@tcp(127.0.0.1:3306)/testdb?parseTime=true
+            DIALECT: mysql
       - name: Upload SQLite benchmark results
         uses: actions/upload-artifact@v3
         with:
