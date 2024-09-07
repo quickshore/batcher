@@ -1,4 +1,4 @@
-module atlasgurus/batcher
+module github.com/atlasgurus/batcher
 
 go 1.22.3
 
