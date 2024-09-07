@@ -14,13 +14,13 @@ import (
 // InsertBatcher is a GORM batcher for batch inserts
 type InsertBatcher[T any] struct {
 	db      *gorm.DB
-	batcher *batcher.BatchProcessor[T]
+	batcher *batcher.BatchProcessor[[]T]
 }
 
 // UpdateBatcher is a GORM batcher for batch updates
 type UpdateBatcher[T any] struct {
 	db      *gorm.DB
-	batcher *batcher.BatchProcessor[UpdateItem[T]]
+	batcher *batcher.BatchProcessor[[]UpdateItem[T]]
 }
 
 type UpdateItem[T any] struct {
@@ -44,69 +44,83 @@ func NewUpdateBatcher[T any](db *gorm.DB, maxBatchSize int, maxWaitTime time.Dur
 	}
 }
 
-// Insert submits an item for batch insertion
-func (b *InsertBatcher[T]) Insert(item T) error {
-	return b.batcher.SubmitAndWait(item)
+// Insert submits one or more items for batch insertion
+func (b *InsertBatcher[T]) Insert(items ...T) error {
+	return b.batcher.SubmitAndWait(items)
 }
 
-// Update submits an item for batch update
-func (b *UpdateBatcher[T]) Update(item T, updateFields []string) error {
-	return b.batcher.SubmitAndWait(UpdateItem[T]{Item: item, UpdateFields: updateFields})
-}
-
-func batchInsert[T any](db *gorm.DB) func([]T) error {
-	return func(items []T) error {
-		if len(items) == 0 {
-			return nil
-		}
-		return db.Create(items).Error
+// Update submits one or more items for batch update
+func (b *UpdateBatcher[T]) Update(items []T, updateFields []string) error {
+	updateItems := make([]UpdateItem[T], len(items))
+	for i, item := range items {
+		updateItems[i] = UpdateItem[T]{Item: item, UpdateFields: updateFields}
 	}
+	return b.batcher.SubmitAndWait(updateItems)
 }
 
-func batchUpdate[T any](db *gorm.DB) func([]UpdateItem[T]) error {
-	return func(items []UpdateItem[T]) error {
-		if len(items) == 0 {
+func batchInsert[T any](db *gorm.DB) func([][]T) error {
+	return func(batches [][]T) error {
+		if len(batches) == 0 {
 			return nil
 		}
 
-		// Start a transaction
 		tx := db.Begin()
 		if tx.Error != nil {
 			return tx.Error
 		}
 
-		for _, updateItem := range items {
-			item := updateItem.Item
-			updateFields := updateItem.UpdateFields
-
-			// Get the primary key field and value
-			primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
-			if primaryKey == "" {
+		for _, batch := range batches {
+			if err := tx.Create(batch).Error; err != nil {
 				tx.Rollback()
-				return fmt.Errorf("primary key not found for item")
+				return err
 			}
+		}
 
-			// Create a map of fields to update
-			updateMap := make(map[string]interface{})
-			v := reflect.ValueOf(item)
-			t := v.Type()
-			if t.Kind() == reflect.Ptr {
-				v = v.Elem()
-				t = v.Type()
-			}
+		return tx.Commit().Error
+	}
+}
 
-			for i := 0; i < t.NumField(); i++ {
-				field := t.Field(i)
-				if len(updateFields) == 0 || contains(updateFields, field.Name) {
-					updateMap[field.Name] = v.Field(i).Interface()
+func batchUpdate[T any](db *gorm.DB) func([][]UpdateItem[T]) error {
+	return func(batches [][]UpdateItem[T]) error {
+		if len(batches) == 0 {
+			return nil
+		}
+
+		tx := db.Begin()
+		if tx.Error != nil {
+			return tx.Error
+		}
+
+		for _, batch := range batches {
+			for _, updateItem := range batch {
+				item := updateItem.Item
+				updateFields := updateItem.UpdateFields
+
+				primaryKey, primaryKeyValue := getPrimaryKeyAndValue(item)
+				if primaryKey == "" {
+					tx.Rollback()
+					return fmt.Errorf("primary key not found for item")
 				}
-			}
 
-			// Perform the update
-			result := tx.Model(new(T)).Where(primaryKey+" = ?", primaryKeyValue).Updates(updateMap)
-			if result.Error != nil {
-				tx.Rollback()
-				return result.Error
+				updateMap := make(map[string]interface{})
+				v := reflect.ValueOf(item)
+				t := v.Type()
+				if t.Kind() == reflect.Ptr {
+					v = v.Elem()
+					t = v.Type()
+				}
+
+				for i := 0; i < t.NumField(); i++ {
+					field := t.Field(i)
+					if len(updateFields) == 0 || contains(updateFields, field.Name) {
+						updateMap[field.Name] = v.Field(i).Interface()
+					}
+				}
+
+				if err := tx.Model(new(T)).Where(primaryKey+" = ?", primaryKeyValue).Updates(updateMap).Error; err != nil {
+					tx.Rollback()
+					return err
+				}
 			}
 		}
 

@@ -83,16 +83,37 @@ func TestInsertBatcher(t *testing.T) {
 	// Clean up the table before the test
 	db.Exec("DELETE FROM test_models")
 
-	// Insert 5 items
-	for i := 1; i <= 5; i++ {
-		err := batcher.Insert(&TestModel{Name: fmt.Sprintf("Test %d", i), Value: i})
+	// Insert single items
+	for i := 1; i <= 3; i++ {
+		err := batcher.Insert(&TestModel{Name: fmt.Sprintf("Single %d", i), Value: i})
 		assert.NoError(t, err)
 	}
+
+	// Insert multiple items at once
+	multipleItems := []*TestModel{
+		{Name: "Multiple 1", Value: 4},
+		{Name: "Multiple 2", Value: 5},
+	}
+	err := batcher.Insert(multipleItems...)
+	assert.NoError(t, err)
 
 	// Check if all items were inserted
 	var count int64
 	db.Model(&TestModel{}).Count(&count)
 	assert.Equal(t, int64(5), count)
+
+	var insertedModels []TestModel
+	db.Find(&insertedModels)
+	assert.Len(t, insertedModels, 5)
+	for i, model := range insertedModels {
+		if i < 3 {
+			assert.Equal(t, fmt.Sprintf("Single %d", i+1), model.Name)
+			assert.Equal(t, i+1, model.Value)
+		} else {
+			assert.Equal(t, fmt.Sprintf("Multiple %d", i-2), model.Name)
+			assert.Equal(t, i+1, model.Value)
+		}
+	}
 }
 
 func TestUpdateBatcher(t *testing.T) {
@@ -109,24 +130,35 @@ func TestUpdateBatcher(t *testing.T) {
 		{Name: "Test 1", Value: 10},
 		{Name: "Test 2", Value: 20},
 		{Name: "Test 3", Value: 30},
+		{Name: "Test 4", Value: 40},
+		{Name: "Test 5", Value: 50},
 	}
 	db.Create(&initialModels)
 
-	// Update the models
-	for i, model := range initialModels {
-		model.Value += 5
-		model.Name = fmt.Sprintf("Updated %d", i+1) // This should not be updated
-		err := batcher.Update(model, []string{"Value"})
+	// Update single items
+	for i := 0; i < 3; i++ {
+		initialModels[i].Value += 5
+		err := batcher.Update([]*TestModel{initialModels[i]}, []string{"Value"})
 		assert.NoError(t, err)
 	}
+
+	// Update multiple items at once
+	for i := 3; i < 5; i++ {
+		initialModels[i].Value += 10
+	}
+	err := batcher.Update([]*TestModel{initialModels[3], initialModels[4]}, []string{"Value"})
+	assert.NoError(t, err)
 
 	// Check if all items were updated correctly
 	var updatedModels []TestModel
 	db.Find(&updatedModels)
-	assert.Len(t, updatedModels, 3)
+	assert.Len(t, updatedModels, 5)
 	for i, model := range updatedModels {
-		assert.Equal(t, initialModels[i].Value, model.Value)
-		assert.NotEqual(t, fmt.Sprintf("Updated %d", i+1), model.Name)
+		if i < 3 {
+			assert.Equal(t, initialModels[i].Value, model.Value)
+		} else {
+			assert.Equal(t, initialModels[i].Value, model.Value)
+		}
 		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name)
 	}
 }
@@ -170,7 +202,7 @@ func TestConcurrentOperations(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			updatedModels[i].Value += 1000
-			err := updateBatcher.Update(&updatedModels[i], nil) // Update all fields
+			err := updateBatcher.Update([]*TestModel{&updatedModels[i]}, nil) // Update all fields
 			assert.NoError(t, err)
 		}(i)
 	}
@@ -200,19 +232,22 @@ func TestUpdateBatcher_AllFields(t *testing.T) {
 	}
 	db.Create(&initialModels)
 
-	for i, model := range initialModels {
-		model.Name = fmt.Sprintf("Updated %d", i+1)
-		model.Value += 5 // Changed from 10 to 5 to match actual behavior
-		err := batcher.Update(&model, nil)
-		assert.NoError(t, err)
+	updatedModels := make([]*TestModel, len(initialModels))
+	for i := range initialModels {
+		updatedModels[i] = &TestModel{
+			ID:    initialModels[i].ID,
+			Name:  fmt.Sprintf("Updated %d", i+1),
+			Value: initialModels[i].Value + 5,
+		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	err := batcher.Update(updatedModels, nil) // Update all fields
+	assert.NoError(t, err)
 
-	var updatedModels []TestModel
-	db.Find(&updatedModels)
-	assert.Len(t, updatedModels, 3)
-	for i, model := range updatedModels {
+	var finalModels []TestModel
+	db.Find(&finalModels)
+	assert.Len(t, finalModels, 3)
+	for i, model := range finalModels {
 		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Updated %d", i+1), model.Name)
 		assert.Equal(t, initialModels[i].Value+5, model.Value)
@@ -234,19 +269,22 @@ func TestUpdateBatcher_SpecificFields(t *testing.T) {
 	}
 	db.Create(&initialModels)
 
-	for i, model := range initialModels {
-		model.Name = fmt.Sprintf("Should Not Update %d", i+1)
-		model.Value += 10 // This is correct, we're adding 10
-		err := batcher.Update(&model, []string{"Value"})
-		assert.NoError(t, err)
+	updatedModels := make([]*TestModel, len(initialModels))
+	for i := range initialModels {
+		updatedModels[i] = &TestModel{
+			ID:    initialModels[i].ID,
+			Name:  fmt.Sprintf("Should Not Update %d", i+1),
+			Value: initialModels[i].Value + 10,
+		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	err := batcher.Update(updatedModels, []string{"Value"})
+	assert.NoError(t, err)
 
-	var updatedModels []TestModel
-	db.Find(&updatedModels)
-	assert.Len(t, updatedModels, 3)
-	for i, model := range updatedModels {
+	var finalModels []TestModel
+	db.Find(&finalModels)
+	assert.Len(t, finalModels, 3)
+	for i, model := range finalModels {
 		fmt.Printf("Model after update: %+v\n", model)
 		assert.Equal(t, fmt.Sprintf("Test %d", i+1), model.Name, "Name should not have been updated")
 		assert.Equal(t, initialModels[i].Value+10, model.Value, "Value should have been updated")
