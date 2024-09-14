@@ -25,6 +25,7 @@ type InsertBatcher[T any] struct {
 type UpdateBatcher[T any] struct {
 	dbProvider DBProvider
 	batcher    *batcher.BatchProcessor[[]UpdateItem[T]]
+	tableName  string
 }
 
 type UpdateItem[T any] struct {
@@ -40,12 +41,63 @@ func NewInsertBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTim
 	}
 }
 
+type batchUpdater struct {
+	primaryKeyField reflect.StructField
+	primaryKeyName  string
+	tableName       string
+}
+
 // NewUpdateBatcher creates a new GORM update batcher
-func NewUpdateBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) *UpdateBatcher[T] {
+func NewUpdateBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context) (*UpdateBatcher[T], error) {
+	// Create a temporary DB connection to get the table name
+	db, err := dbProvider()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
+
+	// Use a new instance of T to get the table name
+	var model T
+	stmt := &gorm.Statement{DB: db}
+	err = stmt.Parse(&model)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse model for table name: %w", err)
+	}
+
+	primaryKeyField, primaryKeyName, keyErr := getPrimaryKeyInfo(reflect.TypeOf(model))
+	if keyErr != nil {
+		return nil, keyErr
+	}
+
 	return &UpdateBatcher[T]{
 		dbProvider: dbProvider,
-		batcher:    batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](dbProvider)),
+		batcher:    batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchUpdate[T](dbProvider, stmt.Table, primaryKeyField, primaryKeyName)),
+		tableName:  stmt.Table,
+	}, nil
+}
+
+func getPrimaryKeyInfo(t reflect.Type) ([]reflect.StructField, []string, error) {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
 	}
+	var primaryKeyFields []reflect.StructField
+	var primaryKeyNames []string
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if strings.Contains(field.Tag.Get("gorm"), "primaryKey") {
+			primaryKeyFields = append(primaryKeyFields, field)
+			columnName := field.Tag.Get("gorm")
+			if strings.Contains(columnName, "column:") {
+				columnName = strings.Split(strings.Split(columnName, "column:")[1], ";")[0]
+			} else {
+				columnName = toSnakeCase(field.Name)
+			}
+			primaryKeyNames = append(primaryKeyNames, columnName)
+		}
+	}
+	if len(primaryKeyFields) == 0 {
+		return nil, nil, fmt.Errorf("no primary key found for type %v", t)
+	}
+	return primaryKeyFields, primaryKeyNames, nil
 }
 
 // Insert submits one or more items for batch insertion
@@ -73,23 +125,31 @@ func batchInsert[T any](dbProvider DBProvider) func([][]T) error {
 			return fmt.Errorf("failed to get database connection: %w", err)
 		}
 
-		tx := db.Begin()
-		if tx.Error != nil {
-			return tx.Error
-		}
-
+		// Flatten all batches into a single slice
+		var allRecords []T
 		for _, batch := range batches {
-			if err := tx.Create(batch).Error; err != nil {
-				tx.Rollback()
-				return err
-			}
+			allRecords = append(allRecords, batch...)
 		}
 
-		return tx.Commit().Error
+		if len(allRecords) == 0 {
+			return nil // No records to insert
+		}
+
+		// Perform a single bulk insert for all records
+		err = db.CreateInBatches(allRecords, len(allRecords)).Error
+		if err != nil {
+			return fmt.Errorf("failed to insert records: %w", err)
+		}
+
+		return nil
 	}
 }
 
-func batchUpdate[T any](dbProvider DBProvider) func([][]UpdateItem[T]) error {
+func batchUpdate[T any](
+	dbProvider DBProvider,
+	tableName string,
+	primaryKeyFields []reflect.StructField,
+	primaryKeyNames []string) func([][]UpdateItem[T]) error {
 	return func(batches [][]UpdateItem[T]) error {
 		if len(batches) == 0 {
 			return nil
@@ -100,111 +160,180 @@ func batchUpdate[T any](dbProvider DBProvider) func([][]UpdateItem[T]) error {
 			return fmt.Errorf("failed to get database connection: %w", err)
 		}
 
-		tx := db.Begin()
-		if tx.Error != nil {
-			return tx.Error
+		var allUpdateItems []UpdateItem[T]
+		for _, batch := range batches {
+			allUpdateItems = append(allUpdateItems, batch...)
 		}
 
-		for _, batch := range batches {
-			for _, updateItem := range batch {
-				item := updateItem.Item
-				updateFields := convertFromSnakeCase(updateItem.UpdateFields)
+		if len(allUpdateItems) == 0 {
+			return nil
+		}
 
-				primaryKeys, primaryKeyValues := getPrimaryKeyAndValues(item)
-				if len(primaryKeys) == 0 {
-					tx.Rollback()
-					return fmt.Errorf("no primary key found for item")
-				}
+		mapping, err := createFieldMapping(allUpdateItems[0].Item)
+		if err != nil {
+			return err
+		}
 
-				updateMap := make(map[string]interface{})
-				v := reflect.ValueOf(item)
-				t := v.Type()
-				if t.Kind() == reflect.Ptr {
-					v = v.Elem()
-					t = v.Type()
-				}
+		updateFieldsMap := make(map[string]bool)
+		var updateFields []string
+		var casesPerField = make(map[string][]string)
+		var valuesPerField = make(map[string][]interface{})
 
-				fieldMatchCount := 0
-				for i := 0; i < t.NumField(); i++ {
-					field := t.Field(i)
-					if len(updateFields) == 0 || contains(updateFields, field.Name) {
-						updateMap[field.Name] = v.Field(i).Interface()
-						fieldMatchCount++
+		for _, updateItem := range allUpdateItems {
+			item := updateItem.Item
+			itemValue := reflect.ValueOf(item)
+			if itemValue.Kind() == reflect.Ptr {
+				itemValue = itemValue.Elem()
+			}
+			itemType := itemValue.Type()
+
+			fieldsToUpdate := updateItem.UpdateFields
+			if len(fieldsToUpdate) == 0 {
+				// Update all fields except the primary key
+				for i := 0; i < itemType.NumField(); i++ {
+					field := itemType.Field(i)
+					if !strings.Contains(field.Tag.Get("gorm"), "primaryKey") {
+						fieldsToUpdate = append(fieldsToUpdate, field.Name)
 					}
 				}
-				if fieldMatchCount != len(updateFields) && len(updateFields) > 0 {
-					tx.Rollback()
-					return fmt.Errorf("not all update fields found")
-				}
+			}
 
-				query := tx.Model(new(T))
-				for i, key := range primaryKeys {
-					query = query.Where(key+" = ?", primaryKeyValues[i])
-				}
-
-				if err := query.Updates(updateMap).Error; err != nil {
-					tx.Rollback()
+			for _, fieldName := range fieldsToUpdate {
+				structFieldName, dbFieldName, err := getFieldNames(fieldName, mapping)
+				if err != nil {
 					return err
 				}
+
+				if !updateFieldsMap[dbFieldName] {
+					updateFieldsMap[dbFieldName] = true
+					updateFields = append(updateFields, dbFieldName)
+				}
+
+				var caseBuilder strings.Builder
+				caseBuilder.WriteString("WHEN ")
+				var caseValues []interface{}
+				for i, pkField := range primaryKeyFields {
+					if i > 0 {
+						caseBuilder.WriteString(" AND ")
+					}
+					caseBuilder.WriteString(fmt.Sprintf("%s = ?", primaryKeyNames[i]))
+					caseValues = append(caseValues, itemValue.FieldByName(pkField.Name).Interface())
+				}
+				caseBuilder.WriteString(" THEN ?")
+				caseValues = append(caseValues, itemValue.FieldByName(structFieldName).Interface())
+
+				casesPerField[dbFieldName] = append(casesPerField[dbFieldName], caseBuilder.String())
+				valuesPerField[dbFieldName] = append(valuesPerField[dbFieldName], caseValues...)
 			}
 		}
 
-		return tx.Commit().Error
-	}
-}
-
-func convertFromSnakeCase(fields []string) []string {
-	convertedFields := make([]string, len(fields))
-	for i, field := range fields {
-		convertedFields[i] = toPascalCase(field)
-	}
-	return convertedFields
-}
-
-func toPascalCase(s string) string {
-	parts := strings.Split(s, "_")
-	for i, part := range parts {
-		if len(part) > 0 {
-			r := []rune(part)
-			r[0] = unicode.ToUpper(r[0])
-			parts[i] = string(r)
+		if len(updateFields) == 0 {
+			return fmt.Errorf("no fields to update")
 		}
-	}
-	return strings.Join(parts, "")
-}
 
-// Helper function to check if a string is in a slice
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		// TODO: This is case-insensitive for now, but we may want to make it more nuanced
-		if strings.ToLower(s) == strings.ToLower(item) {
-			return true
+		var queryBuilder strings.Builder
+		queryBuilder.WriteString(fmt.Sprintf("UPDATE %s SET ", tableName))
+		var allValues []interface{}
+
+		for i, field := range updateFields {
+			if i > 0 {
+				queryBuilder.WriteString(", ")
+			}
+			queryBuilder.WriteString(fmt.Sprintf("%s = CASE %s ELSE %s END",
+				field, strings.Join(casesPerField[field], " "), field))
+			allValues = append(allValues, valuesPerField[field]...)
 		}
+
+		queryBuilder.WriteString(" WHERE ")
+		for i, pkName := range primaryKeyNames {
+			if i > 0 {
+				queryBuilder.WriteString(" AND ")
+			}
+			queryBuilder.WriteString(fmt.Sprintf("%s IN (?)", pkName))
+		}
+
+		for _, pkField := range primaryKeyFields {
+			pkValues := getPrimaryKeyValues(allUpdateItems, pkField.Name)
+			allValues = append(allValues, pkValues)
+		}
+
+		if execErr := db.Exec(queryBuilder.String(), allValues...).Error; execErr != nil {
+			return execErr
+		}
+
+		return nil
 	}
-	return false
 }
 
-// getPrimaryKeyAndValues uses reflection to find the primary key fields and their values
-func getPrimaryKeyAndValues(item interface{}) ([]string, []interface{}) {
+type fieldMapping struct {
+	structToDb map[string]string
+	dbToStruct map[string]string
+}
+
+func createFieldMapping(item interface{}) (fieldMapping, error) {
+	mapping := fieldMapping{
+		structToDb: make(map[string]string),
+		dbToStruct: make(map[string]string),
+	}
 	t := reflect.TypeOf(item)
-	v := reflect.ValueOf(item)
-
-	// If it's a pointer, get the underlying element
 	if t.Kind() == reflect.Ptr {
 		t = t.Elem()
-		v = v.Elem()
 	}
-
-	var keys []string
-	var values []interface{}
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		if tag := field.Tag.Get("gorm"); strings.Contains(tag, "primaryKey") || strings.Contains(tag, "primary_key") {
-			keys = append(keys, field.Name)
-			values = append(values, v.Field(i).Interface())
-		}
+		dbFieldName := getDBFieldName(field)
+		mapping.structToDb[field.Name] = dbFieldName
+		mapping.dbToStruct[dbFieldName] = field.Name
 	}
 
-	return keys, values
+	return mapping, nil
+}
+
+func getFieldNames(fieldName string, mapping fieldMapping) (string, string, error) {
+	if structFieldName, ok := mapping.dbToStruct[fieldName]; ok {
+		return structFieldName, fieldName, nil
+	}
+	if dbFieldName, ok := mapping.structToDb[fieldName]; ok {
+		return fieldName, dbFieldName, nil
+	}
+	return "", "", fmt.Errorf("field %s not found", fieldName)
+}
+
+func getDBFieldName(field reflect.StructField) string {
+	if dbName := field.Tag.Get("gorm"); dbName != "" {
+		if strings.Contains(dbName, "column") {
+			return strings.Split(strings.Split(dbName, "column:")[1], ";")[0]
+		}
+	}
+	return toSnakeCase(field.Name)
+}
+
+func getPrimaryKeyValues[T any](items []UpdateItem[T], primaryKeyFieldName string) []interface{} {
+	var values []interface{}
+	for _, item := range items {
+		itemValue := reflect.ValueOf(item.Item)
+		if itemValue.Kind() == reflect.Ptr {
+			itemValue = itemValue.Elem()
+		}
+		values = append(values, itemValue.FieldByName(primaryKeyFieldName).Interface())
+	}
+	return values
+}
+
+func toSnakeCase(s string) string {
+	var result strings.Builder
+	for i, r := range s {
+		if i > 0 {
+			prevIsLower := unicode.IsLower(rune(s[i-1]))
+			currIsUpper := unicode.IsUpper(r)
+			nextIsLower := i+1 < len(s) && unicode.IsLower(rune(s[i+1]))
+
+			if (prevIsLower && currIsUpper) || (currIsUpper && nextIsLower) {
+				result.WriteRune('_')
+			}
+		}
+		result.WriteRune(unicode.ToLower(r))
+	}
+	return result.String()
 }
