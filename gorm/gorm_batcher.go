@@ -3,7 +3,9 @@ package gorm
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -40,12 +42,6 @@ func NewInsertBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTim
 		dbProvider: dbProvider,
 		batcher:    batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchInsert[T](dbProvider)),
 	}
-}
-
-type batchUpdater struct {
-	primaryKeyField reflect.StructField
-	primaryKeyName  string
-	tableName       string
 }
 
 // NewUpdateBatcher creates a new GORM update batcher
@@ -120,6 +116,11 @@ func (b *UpdateBatcher[T]) Update(items []T, updateFields []string) error {
 	return b.batcher.SubmitAndWait(updateItems)
 }
 
+const (
+	maxRetries = 3
+	baseDelay  = 100 * time.Millisecond
+)
+
 func batchInsert[T any](dbProvider DBProvider) func([][]T) []error {
 	return func(batches [][]T) []error {
 		if len(batches) == 0 {
@@ -131,7 +132,6 @@ func batchInsert[T any](dbProvider DBProvider) func([][]T) []error {
 			return batcher.RepeatErr(len(batches), fmt.Errorf("failed to get database connection: %w", err))
 		}
 
-		// Flatten all batches into a single slice
 		var allRecords []T
 		for _, batch := range batches {
 			allRecords = append(allRecords, batch...)
@@ -141,15 +141,32 @@ func batchInsert[T any](dbProvider DBProvider) func([][]T) []error {
 			return batcher.RepeatErr(len(batches), nil)
 		}
 
-		// Perform a single bulk upsert for all records, replacing all fields on duplicate
-		err = db.Clauses(clause.OnConflict{
-			UpdateAll: true,
-		}).CreateInBatches(allRecords, len(allRecords)).Error
-		if err != nil {
-			return batcher.RepeatErr(len(batches), fmt.Errorf("failed to upsert records: %w", err))
+		var lastErr error
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			err = db.Transaction(func(tx *gorm.DB) error {
+				return tx.Clauses(clause.OnConflict{
+					UpdateAll: true,
+				}).CreateInBatches(allRecords, len(allRecords)).Error
+			})
+
+			if err == nil {
+				return batcher.RepeatErr(len(batches), nil)
+			}
+
+			if !isDeadlockError(err) {
+				lastErr = fmt.Errorf("failed to upsert records: %w", err)
+				break
+			}
+
+			delay := baseDelay * time.Duration(1<<uint(attempt)) * time.Duration(1+rand.Intn(100)) / 100
+			time.Sleep(delay)
 		}
 
-		return batcher.RepeatErr(len(batches), nil)
+		if lastErr != nil {
+			return batcher.RepeatErr(len(batches), lastErr)
+		}
+
+		return batcher.RepeatErr(len(batches), fmt.Errorf("failed to upsert records after %d retries", maxRetries))
 	}
 }
 
@@ -163,9 +180,9 @@ func batchUpdate[T any](
 			return nil
 		}
 
-		db, err := dbProvider()
-		if err != nil {
-			return batcher.RepeatErr(len(batches), fmt.Errorf("failed to get database connection: %w", err))
+		db, dbProviderErr := dbProvider()
+		if dbProviderErr != nil {
+			return batcher.RepeatErr(len(batches), fmt.Errorf("failed to get database connection: %w", dbProviderErr))
 		}
 
 		var allUpdateItems []UpdateItem[T]
@@ -177,113 +194,137 @@ func batchUpdate[T any](
 			return batcher.RepeatErr(len(batches), nil)
 		}
 
-		mapping, err := createFieldMapping(allUpdateItems[0].Item)
-		if err != nil {
-			return batcher.RepeatErr(len(batches), err)
-		}
+		var lastErr error
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			err := db.Transaction(func(tx *gorm.DB) error {
+				mapping, err := createFieldMapping(allUpdateItems[0].Item)
+				if err != nil {
+					return err
+				}
 
-		updateFieldsMap := make(map[string]bool)
-		var updateFields []string
-		var casesPerField = make(map[string][]string)
-		var valuesPerField = make(map[string][]interface{})
+				updateFieldsMap := make(map[string]bool)
+				var updateFields []string
+				var casesPerField = make(map[string][]string)
+				var valuesPerField = make(map[string][]interface{})
 
-		for _, updateItem := range allUpdateItems {
-			item := updateItem.Item
-			itemValue := reflect.ValueOf(item)
-			if itemValue.Kind() == reflect.Ptr {
-				itemValue = itemValue.Elem()
-			}
-			itemType := itemValue.Type()
+				for _, updateItem := range allUpdateItems {
+					item := updateItem.Item
+					itemValue := reflect.ValueOf(item)
+					if itemValue.Kind() == reflect.Ptr {
+						itemValue = itemValue.Elem()
+					}
+					itemType := itemValue.Type()
 
-			fieldsToUpdate := updateItem.UpdateFields
-			if len(fieldsToUpdate) == 0 {
-				// Update all fields except the primary key
-				for i := 0; i < itemType.NumField(); i++ {
-					field := itemType.Field(i)
-					if !isPrimaryKey(field) {
-						fieldsToUpdate = append(fieldsToUpdate, field.Name)
+					fieldsToUpdate := updateItem.UpdateFields
+					if len(fieldsToUpdate) == 0 {
+						// Update all fields except the primary key
+						for i := 0; i < itemType.NumField(); i++ {
+							field := itemType.Field(i)
+							if !isPrimaryKey(field) {
+								fieldsToUpdate = append(fieldsToUpdate, field.Name)
+							}
+						}
+					}
+
+					// Always include updated_at field if it exists
+					_, updatedAtExists := itemType.FieldByName("UpdatedAt")
+					if updatedAtExists && !contains(fieldsToUpdate, "UpdatedAt") {
+						fieldsToUpdate = append(fieldsToUpdate, "UpdatedAt")
+					}
+
+					for _, fieldName := range fieldsToUpdate {
+						structFieldName, dbFieldName, getFieldErr := getFieldNames(fieldName, mapping)
+						if getFieldErr != nil {
+							return getFieldErr
+						}
+
+						if !updateFieldsMap[dbFieldName] {
+							updateFieldsMap[dbFieldName] = true
+							updateFields = append(updateFields, dbFieldName)
+						}
+
+						var caseBuilder strings.Builder
+						caseBuilder.WriteString("WHEN ")
+						var caseValues []interface{}
+						for i, pkField := range primaryKeyFields {
+							if i > 0 {
+								caseBuilder.WriteString(" AND ")
+							}
+							caseBuilder.WriteString(fmt.Sprintf("%s = ?", primaryKeyNames[i]))
+							caseValues = append(caseValues, itemValue.FieldByName(pkField.Name).Interface())
+						}
+						caseBuilder.WriteString(" THEN ?")
+
+						var fieldValue interface{}
+						if fieldName == "UpdatedAt" {
+							fieldValue = time.Now() // Use current time for updated_at
+						} else {
+							fieldValue = itemValue.FieldByName(structFieldName).Interface()
+						}
+						caseValues = append(caseValues, fieldValue)
+
+						casesPerField[dbFieldName] = append(casesPerField[dbFieldName], caseBuilder.String())
+						valuesPerField[dbFieldName] = append(valuesPerField[dbFieldName], caseValues...)
 					}
 				}
-			}
 
-			// Always include updated_at field if it exists
-			_, updatedAtExists := itemType.FieldByName("UpdatedAt")
-			if updatedAtExists && !contains(fieldsToUpdate, "UpdatedAt") {
-				fieldsToUpdate = append(fieldsToUpdate, "UpdatedAt")
-			}
-
-			for _, fieldName := range fieldsToUpdate {
-				structFieldName, dbFieldName, getFieldErr := getFieldNames(fieldName, mapping)
-				if getFieldErr != nil {
-					return batcher.RepeatErr(len(batches), getFieldErr)
+				if len(updateFields) == 0 {
+					return fmt.Errorf("no fields to update")
 				}
 
-				if !updateFieldsMap[dbFieldName] {
-					updateFieldsMap[dbFieldName] = true
-					updateFields = append(updateFields, dbFieldName)
-				}
+				var queryBuilder strings.Builder
+				queryBuilder.WriteString(fmt.Sprintf("UPDATE %s SET ", tableName))
+				var allValues []interface{}
 
-				var caseBuilder strings.Builder
-				caseBuilder.WriteString("WHEN ")
-				var caseValues []interface{}
-				for i, pkField := range primaryKeyFields {
+				for i, field := range updateFields {
 					if i > 0 {
-						caseBuilder.WriteString(" AND ")
+						queryBuilder.WriteString(", ")
 					}
-					caseBuilder.WriteString(fmt.Sprintf("%s = ?", primaryKeyNames[i]))
-					caseValues = append(caseValues, itemValue.FieldByName(pkField.Name).Interface())
+					queryBuilder.WriteString(fmt.Sprintf("%s = CASE %s ELSE %s END",
+						field, strings.Join(casesPerField[field], " "), field))
+					allValues = append(allValues, valuesPerField[field]...)
 				}
-				caseBuilder.WriteString(" THEN ?")
 
-				var fieldValue interface{}
-				if fieldName == "UpdatedAt" {
-					fieldValue = time.Now() // Use current time for updated_at
-				} else {
-					fieldValue = itemValue.FieldByName(structFieldName).Interface()
+				queryBuilder.WriteString(" WHERE ")
+				for i, pkName := range primaryKeyNames {
+					if i > 0 {
+						queryBuilder.WriteString(" AND ")
+					}
+					queryBuilder.WriteString(fmt.Sprintf("%s IN (?)", pkName))
 				}
-				caseValues = append(caseValues, fieldValue)
 
-				casesPerField[dbFieldName] = append(casesPerField[dbFieldName], caseBuilder.String())
-				valuesPerField[dbFieldName] = append(valuesPerField[dbFieldName], caseValues...)
+				for _, pkField := range primaryKeyFields {
+					pkValues := getPrimaryKeyValues(allUpdateItems, pkField.Name)
+					allValues = append(allValues, pkValues)
+				}
+
+				return tx.Exec(queryBuilder.String(), allValues...).Error
+			})
+
+			if err == nil {
+				return batcher.RepeatErr(len(batches), nil)
 			}
-		}
 
-		if len(updateFields) == 0 {
-			return batcher.RepeatErr(len(batches), fmt.Errorf("no fields to update"))
-		}
-
-		var queryBuilder strings.Builder
-		queryBuilder.WriteString(fmt.Sprintf("UPDATE %s SET ", tableName))
-		var allValues []interface{}
-
-		for i, field := range updateFields {
-			if i > 0 {
-				queryBuilder.WriteString(", ")
+			if !isDeadlockError(err) {
+				lastErr = fmt.Errorf("failed to update records: %w", err)
+				break
 			}
-			queryBuilder.WriteString(fmt.Sprintf("%s = CASE %s ELSE %s END",
-				field, strings.Join(casesPerField[field], " "), field))
-			allValues = append(allValues, valuesPerField[field]...)
+
+			delay := baseDelay * time.Duration(1<<uint(attempt)) * time.Duration(1+rand.Intn(100)) / 100
+			time.Sleep(delay)
 		}
 
-		queryBuilder.WriteString(" WHERE ")
-		for i, pkName := range primaryKeyNames {
-			if i > 0 {
-				queryBuilder.WriteString(" AND ")
-			}
-			queryBuilder.WriteString(fmt.Sprintf("%s IN (?)", pkName))
+		if lastErr != nil {
+			return batcher.RepeatErr(len(batches), lastErr)
 		}
 
-		for _, pkField := range primaryKeyFields {
-			pkValues := getPrimaryKeyValues(allUpdateItems, pkField.Name)
-			allValues = append(allValues, pkValues)
-		}
-
-		if execErr := db.Exec(queryBuilder.String(), allValues...).Error; execErr != nil {
-			return batcher.RepeatErr(len(batches), execErr)
-		}
-
-		return batcher.RepeatErr(len(batches), nil)
+		return batcher.RepeatErr(len(batches), fmt.Errorf("failed to update records after %d retries", maxRetries))
 	}
+}
+
+func isDeadlockError(err error) bool {
+	return strings.Contains(err.Error(), "Deadlock found when trying to get lock") ||
+		strings.Contains(err.Error(), "database table is locked")
 }
 
 // Helper function to check if a slice contains a string
@@ -367,4 +408,321 @@ func toSnakeCase(s string) string {
 		result.WriteRune(unicode.ToLower(r))
 	}
 	return result.String()
+}
+
+type SelectBatcher[T any] struct {
+	dbProvider DBProvider
+	batcher    batcher.BatchProcessorInterface[[]SelectItem[T]]
+	tableName  string
+	columns    []string
+}
+
+type SelectItem[T any] struct {
+	Condition string
+	Args      []interface{}
+	Results   *[]T
+}
+
+func NewSelectBatcher[T any](dbProvider DBProvider, maxBatchSize int, maxWaitTime time.Duration, ctx context.Context, columns []string) (*SelectBatcher[T], error) {
+	db, err := dbProvider()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database connection: %w", err)
+	}
+
+	var model T
+	stmt := &gorm.Statement{DB: db}
+	err = stmt.Parse(&model)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse model for table name: %w", err)
+	}
+
+	// Validate that all specified columns exist in the model
+	allColumns, err := getColumnNames(model)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get column names: %w", err)
+	}
+
+	columnSet := make(map[string]bool)
+	for _, col := range allColumns {
+		columnSet[col] = true
+	}
+
+	for _, col := range columns {
+		if !columnSet[col] {
+			return nil, fmt.Errorf("column %s does not exist in model", col)
+		}
+	}
+
+	return &SelectBatcher[T]{
+		dbProvider: dbProvider,
+		batcher:    batcher.NewBatchProcessor(maxBatchSize, maxWaitTime, ctx, batchSelect[T](dbProvider, stmt.Table, columns)),
+		tableName:  stmt.Table,
+		columns:    columns,
+	}, nil
+}
+
+func (b *SelectBatcher[T]) Select(condition string, args ...interface{}) ([]T, error) {
+	var results []T
+	item := SelectItem[T]{
+		Condition: condition,
+		Args:      args,
+		Results:   &results,
+	}
+	err := b.batcher.SubmitAndWait([]SelectItem[T]{item})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func batchSelect[T any](dbProvider DBProvider, tableName string, columns []string) func([][]SelectItem[T]) []error {
+	return func(batches [][]SelectItem[T]) (errs []error) {
+		defer func() {
+			if r := recover(); r != nil {
+				errs = batcher.RepeatErr(len(batches), fmt.Errorf("panic in batchSelect: %v", r))
+			}
+		}()
+
+		if len(batches) == 0 {
+			return batcher.RepeatErr(len(batches), nil)
+		}
+
+		db, err := dbProvider()
+		if err != nil {
+			return batcher.RepeatErr(len(batches), fmt.Errorf("failed to get database connection: %w", err))
+		}
+
+		var allItems []SelectItem[T]
+		for _, batch := range batches {
+			allItems = append(allItems, batch...)
+		}
+
+		if len(allItems) == 0 {
+			return batcher.RepeatErr(len(batches), nil)
+		}
+
+		// Build the query
+		var queryBuilder strings.Builder
+		var args []interface{}
+
+		dialectName := db.Dialector.Name()
+
+		for i, item := range allItems {
+			if i > 0 {
+				queryBuilder.WriteString(" UNION ALL ")
+			}
+			selectColumns := append([]string{fmt.Sprintf("CAST(? AS CHAR) AS %s", quoteIdentifier("__index", dialectName))}, columns...)
+			queryBuilder.WriteString(fmt.Sprintf("SELECT %s FROM %s WHERE %s",
+				strings.Join(selectColumns, ", "),
+				quoteIdentifier(tableName, dialectName),
+				item.Condition))
+			args = append(args, i) // Add index as an argument
+			args = append(args, item.Args...)
+		}
+
+		queryBuilder.WriteString(fmt.Sprintf(" ORDER BY %s", quoteIdentifier("__index", dialectName)))
+
+		// Execute the query
+		rows, err := db.Raw(queryBuilder.String(), args...).Rows()
+		if err != nil {
+			return batcher.RepeatErr(len(batches), fmt.Errorf("failed to execute select query: %w", err))
+		}
+		defer rows.Close()
+
+		// Prepare a slice of slices to hold all results
+		results := make([][]T, len(allItems))
+		for i := range results {
+			results[i] = make([]T, 0)
+		}
+
+		// Scan the results
+		for rows.Next() {
+			values := make([]interface{}, len(columns)+1) // +1 for __index
+			for i := range values {
+				values[i] = new(interface{})
+			}
+
+			if err := rows.Scan(values...); err != nil {
+				return batcher.RepeatErr(len(batches), fmt.Errorf("failed to scan row: %w", err))
+			}
+
+			// Get the index
+			indexValue := reflect.ValueOf(values[0]).Elem().Interface()
+			index, err := convertToInt(indexValue)
+			if err != nil {
+				return batcher.RepeatErr(len(batches), fmt.Errorf("failed to parse index: %w", err))
+			}
+
+			// Create a new instance of T and scan into it
+			var result T
+			if err := scanIntoStruct(&result, columns, values[1:]); err != nil {
+				return batcher.RepeatErr(len(batches), fmt.Errorf("failed to scan into struct: %w", err))
+			}
+
+			// Append the result to the corresponding slice
+			results[index] = append(results[index], result)
+		}
+
+		// Assign results back to the original items
+		for i, item := range allItems {
+			*item.Results = results[i]
+		}
+
+		return batcher.RepeatErr(len(batches), nil)
+	}
+}
+
+func convertToInt(value interface{}) (int, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case int64:
+		return int(v), nil
+	case uint:
+		return int(v), nil
+	case uint64:
+		return int(v), nil
+	case []uint8:
+		return strconv.Atoi(string(v))
+	case string:
+		return strconv.Atoi(v)
+	default:
+		return 0, fmt.Errorf("unexpected index type: %T", value)
+	}
+}
+
+func quoteIdentifier(identifier string, dialect string) string {
+	switch dialect {
+	case "mysql":
+		return "`" + strings.Replace(identifier, "`", "``", -1) + "`"
+	case "postgres":
+		return `"` + strings.Replace(identifier, `"`, `""`, -1) + `"`
+	case "sqlite":
+		return `"` + strings.Replace(identifier, `"`, `""`, -1) + `"`
+	default:
+		return identifier
+	}
+}
+
+func getColumnNames(model interface{}) ([]string, error) {
+	t := reflect.TypeOf(model)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("model must be a struct or a pointer to a struct")
+	}
+
+	var columns []string
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.Anonymous {
+			continue // Skip embedded fields
+		}
+		gormTag := field.Tag.Get("gorm")
+		column := ""
+		if gormTag != "" && gormTag != "-" {
+			tagParts := strings.Split(gormTag, ";")
+			for _, part := range tagParts {
+				if strings.HasPrefix(part, "column:") {
+					column = strings.TrimPrefix(part, "column:")
+					break
+				}
+			}
+		}
+		if column == "" {
+			column = toSnakeCase(field.Name)
+		}
+		columns = append(columns, column)
+	}
+	return columns, nil
+}
+
+func scanIntoStruct(result interface{}, columns []string, values []interface{}) error {
+	resultValue := reflect.ValueOf(result)
+	if resultValue.Kind() != reflect.Ptr {
+		return fmt.Errorf("result must be a pointer")
+	}
+	resultValue = resultValue.Elem()
+
+	if resultValue.Kind() == reflect.Ptr {
+		if resultValue.IsNil() {
+			resultValue.Set(reflect.New(resultValue.Type().Elem()))
+		}
+		resultValue = resultValue.Elem()
+	}
+
+	if resultValue.Kind() != reflect.Struct {
+		return fmt.Errorf("result must be a pointer to a struct")
+	}
+
+	resultType := resultValue.Type()
+
+	for i, column := range columns {
+		value := reflect.ValueOf(values[i]).Elem().Interface()
+
+		field := resultValue.FieldByNameFunc(func(name string) bool {
+			field, _ := resultType.FieldByName(name)
+			dbName := field.Tag.Get("gorm")
+			if dbName == column {
+				return true
+			}
+			return strings.EqualFold(name, column) ||
+				strings.EqualFold(toSnakeCase(name), column) ||
+				strings.EqualFold(name, strings.ReplaceAll(column, "_", ""))
+		})
+
+		if !field.IsValid() {
+			return fmt.Errorf("no field found for column %s", column)
+		}
+
+		if !field.CanSet() {
+			return fmt.Errorf("field %s cannot be set (might be unexported)", column)
+		}
+
+		switch field.Kind() {
+		case reflect.String:
+			switch v := value.(type) {
+			case []uint8:
+				field.SetString(string(v))
+			case string:
+				field.SetString(v)
+			default:
+				return fmt.Errorf("cannot set string field %s with value of type %T", column, value)
+			}
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			switch v := value.(type) {
+			case int64:
+				field.SetUint(uint64(v))
+			case uint64:
+				field.SetUint(v)
+			default:
+				return fmt.Errorf("cannot set uint field %s with value of type %T", column, value)
+			}
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			switch v := value.(type) {
+			case int64:
+				field.SetInt(v)
+			case int:
+				field.SetInt(int64(v))
+			default:
+				return fmt.Errorf("cannot set int field %s with value of type %T", column, value)
+			}
+		case reflect.Float32, reflect.Float64:
+			v, ok := value.(float64)
+			if !ok {
+				return fmt.Errorf("cannot set float field %s with value of type %T", column, value)
+			}
+			field.SetFloat(v)
+		case reflect.Bool:
+			v, ok := value.(bool)
+			if !ok {
+				return fmt.Errorf("cannot set bool field %s with value of type %T", column, value)
+			}
+			field.SetBool(v)
+		default:
+			return fmt.Errorf("unsupported field type for %s: %v", column, field.Kind())
+		}
+	}
+	return nil
 }
