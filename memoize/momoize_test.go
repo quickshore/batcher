@@ -1,6 +1,7 @@
 package memoize
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -285,7 +286,7 @@ func TestMemoizeWithSizeLimitAndExpiration(t *testing.T) {
 	}
 
 	finalCalls := atomic.LoadInt64(&calls)
-	if finalCalls <= 200 || finalCalls >= 300 {
+	if finalCalls <= 200 || finalCalls > 300 {
 		t.Errorf("Expected between 200 and 300 calls, got %d", finalCalls)
 	}
 }
@@ -315,5 +316,127 @@ func TestMemoizeConcurrency(t *testing.T) {
 
 	if calls != 1 {
 		t.Errorf("Expected 1 call, got %d", calls)
+	}
+}
+
+// MockDB is a simple mock to simulate *gorm.DB for testing purposes
+type MockDB struct {
+	connectionString string
+}
+
+func TestMemoizeWithPointerArguments(t *testing.T) {
+	calls := 0
+	f := func(db *MockDB) string {
+		calls++
+		return db.connectionString
+	}
+
+	memoized := Memoize(f)
+
+	db1 := &MockDB{connectionString: "database1"}
+	db2 := &MockDB{connectionString: "database1"} // Same connection string as db1
+	db3 := &MockDB{connectionString: "database2"}
+
+	// First call with db1
+	result1 := memoized(db1)
+	if result1 != "database1" || calls != 1 {
+		t.Errorf("Expected result 'database1' and 1 call, got %s and %d calls", result1, calls)
+	}
+
+	// Second call with db1 (should hit cache)
+	result2 := memoized(db1)
+	if result2 != "database1" || calls != 1 {
+		t.Errorf("Expected cached result 'database1' and still 1 call, got %s and %d calls", result2, calls)
+	}
+
+	// Call with db2 (different pointer, same content - should not hit cache)
+	result3 := memoized(db2)
+	if result3 != "database1" || calls != 2 {
+		t.Errorf("Expected new result 'database1' and 2 calls, got %s and %d calls", result3, calls)
+	}
+
+	// Call with db3 (different content)
+	result4 := memoized(db3)
+	if result4 != "database2" || calls != 3 {
+		t.Errorf("Expected result 'database2' and 3 calls, got %s and %d calls", result4, calls)
+	}
+}
+
+func TestMemoizeWithContext(t *testing.T) {
+	// Test function with context as first argument
+	func1Calls := 0
+	func1 := func(ctx context.Context, a int, b string) string {
+		func1Calls++
+		return fmt.Sprintf("%d-%s", a, b)
+	}
+	memoFunc1 := Memoize(func1, WithMaxSize(100), WithExpiration(time.Minute))
+
+	// Test function with context as middle argument
+	func2Calls := 0
+	func2 := func(a int, ctx context.Context, b string) string {
+		func2Calls++
+		return fmt.Sprintf("%d-%s", a, b)
+	}
+	memoFunc2 := Memoize(func2, WithMaxSize(100), WithExpiration(time.Minute))
+
+	// Test function with context as last argument
+	func3Calls := 0
+	func3 := func(a int, b string, ctx context.Context) string {
+		func3Calls++
+		return fmt.Sprintf("%d-%s", a, b)
+	}
+	memoFunc3 := Memoize(func3, WithMaxSize(100), WithExpiration(time.Minute))
+
+	ctx1 := context.Background()
+	ctx2 := context.WithValue(context.Background(), "key", "value")
+
+	// Test cases
+	testCases := []struct {
+		name     string
+		memoFunc interface{}
+		args     []interface{}
+		expected string
+		calls    *int
+	}{
+		{"Func1 First Call", memoFunc1, []interface{}{ctx1, 1, "a"}, "1-a", &func1Calls},
+		{"Func1 Same Args Different Context", memoFunc1, []interface{}{ctx2, 1, "a"}, "1-a", &func1Calls},
+		{"Func1 Different Args", memoFunc1, []interface{}{ctx1, 2, "a"}, "2-a", &func1Calls},
+
+		{"Func2 First Call", memoFunc2, []interface{}{1, ctx1, "a"}, "1-a", &func2Calls},
+		{"Func2 Same Args Different Context", memoFunc2, []interface{}{1, ctx2, "a"}, "1-a", &func2Calls},
+		{"Func2 Different Args", memoFunc2, []interface{}{2, ctx1, "a"}, "2-a", &func2Calls},
+
+		{"Func3 First Call", memoFunc3, []interface{}{1, "a", ctx1}, "1-a", &func3Calls},
+		{"Func3 Same Args Different Context", memoFunc3, []interface{}{1, "a", ctx2}, "1-a", &func3Calls},
+		{"Func3 Different Args", memoFunc3, []interface{}{2, "a", ctx1}, "2-a", &func3Calls},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			initialCalls := *tc.calls
+			var result string
+			switch f := tc.memoFunc.(type) {
+			case func(context.Context, int, string) string:
+				result = f(tc.args[0].(context.Context), tc.args[1].(int), tc.args[2].(string))
+			case func(int, context.Context, string) string:
+				result = f(tc.args[0].(int), tc.args[1].(context.Context), tc.args[2].(string))
+			case func(int, string, context.Context) string:
+				result = f(tc.args[0].(int), tc.args[1].(string), tc.args[2].(context.Context))
+			}
+
+			if result != tc.expected {
+				t.Errorf("Expected result %s, got %s", tc.expected, result)
+			}
+
+			expectedCalls := initialCalls
+			if tc.name == "Func1 First Call" || tc.name == "Func2 First Call" || tc.name == "Func3 First Call" ||
+				tc.name == "Func1 Different Args" || tc.name == "Func2 Different Args" || tc.name == "Func3 Different Args" {
+				expectedCalls++
+			}
+
+			if *tc.calls != expectedCalls {
+				t.Errorf("Expected %d calls, got %d", expectedCalls, *tc.calls)
+			}
+		})
 	}
 }

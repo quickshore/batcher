@@ -2,8 +2,10 @@ package memoize
 
 import (
 	"container/list"
+	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,27 +18,27 @@ type cacheEntry struct {
 	element  *list.Element
 }
 
-type MemoizeOption func(*memoizeOptions)
+type Option func(*memoizeOptions)
 
 type memoizeOptions struct {
 	maxSize    int
 	expiration time.Duration
 }
 
-func WithMaxSize(size int) MemoizeOption {
+func WithMaxSize(size int) Option {
 	return func(o *memoizeOptions) {
 		o.maxSize = size
 	}
 }
 
-func WithExpiration(d time.Duration) MemoizeOption {
+func WithExpiration(d time.Duration) Option {
 	return func(o *memoizeOptions) {
 		o.expiration = d
 	}
 }
 
 // Memoize takes a function of any type and returns a memoized version of it.
-func Memoize[F any](f F, options ...MemoizeOption) F {
+func Memoize[F any](f F, options ...Option) F {
 	ft := reflect.TypeOf(f)
 	if ft.Kind() != reflect.Func {
 		panic("Memoize: argument must be a function")
@@ -159,19 +161,66 @@ func Memoize[F any](f F, options ...MemoizeOption) F {
 }
 
 func makeKey(args []reflect.Value) string {
-	var key string
+	var key strings.Builder
 	for i, arg := range args {
 		if i > 0 {
-			key += ","
+			key.WriteString(",")
 		}
-		switch arg.Kind() {
-		case reflect.Array, reflect.Slice, reflect.Map, reflect.Struct:
-			// Use a string representation for complex types
-			key += fmt.Sprintf("%#v", arg.Interface())
-		default:
-			// Use the value directly for simple types
-			key += fmt.Sprintf("%v", arg.Interface())
+		if true {
+			key.WriteString(makeShallowKey(arg))
+		} else {
+			key.WriteString(makeDeepKey(arg))
 		}
 	}
+	return key.String()
+}
+
+// in case we want to start using a deep key
+func makeDeepKey(v reflect.Value) string {
+	var key string
+	switch v.Kind() {
+	case reflect.Array, reflect.Slice, reflect.Map, reflect.Struct:
+		// Use a string representation for complex types
+		key += fmt.Sprintf("%#v", v.Interface())
+	default:
+		// Use the value directly for simple types
+		key += fmt.Sprintf("%v", v.Interface())
+	}
 	return key
+}
+
+func makeShallowKey(v reflect.Value) string {
+	// Special handling for context.Context
+	if v.Type().Implements(reflect.TypeOf((*context.Context)(nil)).Elem()) {
+		return "context" // We return a constant string for all contexts
+	}
+
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			return "nil"
+		}
+		return fmt.Sprintf("ptr(%p):%s", v.Interface(), makeShallowKey(v.Elem()))
+	case reflect.Struct:
+		var fieldKeys []string
+		t := v.Type()
+		for i := 0; i < v.NumField(); i++ {
+			if t.Field(i).IsExported() {
+				field := v.Field(i)
+				fieldKeys = append(fieldKeys, fmt.Sprintf("%s:%s", t.Field(i).Name, makeShallowKey(field)))
+			}
+		}
+		return fmt.Sprintf("%s{%s}", v.Type().Name(), strings.Join(fieldKeys, ","))
+	case reflect.Slice:
+		var elemKeys []string
+		for i := 0; i < v.Len(); i++ {
+			elemKeys = append(elemKeys, fmt.Sprintf("%v", v.Index(i).Interface()))
+		}
+		return fmt.Sprintf("%s[%s]", v.Type().Name(), strings.Join(elemKeys, ","))
+	case reflect.Map:
+		// For maps, we still use length and address to avoid deep comparison
+		return fmt.Sprintf("%s(len=%d,addr=%p)", v.Type().Name(), v.Len(), v.Interface())
+	default:
+		return fmt.Sprintf("%v", v.Interface())
+	}
 }
