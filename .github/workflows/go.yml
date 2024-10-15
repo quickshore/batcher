@@ -146,4 +146,4 @@ jobs:
       - name: Summarize benchmark results
         run: |
           echo "## SQLite Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          grep "Benchmark Statistics:" -A 7 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
+          grep "BenchmarkGORMBatcher" -A 3 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
