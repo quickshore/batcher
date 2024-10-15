@@ -2,7 +2,6 @@ name: Go Multi-DB Tests and Benchmark
 
 on:
   push:
-    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
