@@ -53,7 +53,7 @@ jobs:
       - name: Summarize benchmark results
         run: |
           echo "## MySQL Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          cat benchmark_output.txt >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -A 28 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
 
   test-postgres:
     runs-on: ubuntu-latest
@@ -102,7 +102,7 @@ jobs:
       - name: Summarize benchmark results
         run: |
           echo "## PostgreSQL Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          cat benchmark_output.txt >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -A 28 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
 
   test-sqlite:
     runs-on: ubuntu-latest
@@ -146,4 +146,4 @@ jobs:
       - name: Summarize benchmark results
         run: |
           echo "## SQLite Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          cat benchmark_output.txt >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -A 28 benchmark_output.txt >> $GITHUB_STEP_SUMMARY

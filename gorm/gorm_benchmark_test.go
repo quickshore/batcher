@@ -17,6 +17,7 @@ type BenchTestModel struct {
 }
 
 func BenchmarkGORMBatcher(b *testing.B) {
+	// Configuration
 	const (
 		numRoutines          = 100
 		operationsPerRoutine = 99
@@ -42,13 +43,14 @@ func BenchmarkGORMBatcher(b *testing.B) {
 		b.Fatalf("Failed to migrate database: %v", err)
 	}
 
+	metrics := newMetrics()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
 		db.Exec("DELETE FROM bench_test_models")
 
 		var wg sync.WaitGroup
-		metrics := newMetrics()
+		iterationMetrics := newMetrics()
 
 		start := time.Now()
 
@@ -67,7 +69,7 @@ func BenchmarkGORMBatcher(b *testing.B) {
 					case 0: // Insert
 						model := &BenchTestModel{ID: uint(id), Name: fmt.Sprintf("Test %d-%d", routineID, k), MyValue1: k}
 						err = insertBatcher.Insert(model)
-						metrics.recordOperation(&metrics.Insert, opStart, err)
+						iterationMetrics.recordOperation(&iterationMetrics.Insert, opStart, err)
 					case 1: // Update
 						model := &BenchTestModel{ID: uint(id), MyValue1: k * 10, MyValue2: k * 20}
 						if routineID%2 == 0 {
@@ -75,22 +77,24 @@ func BenchmarkGORMBatcher(b *testing.B) {
 						} else {
 							err = updateBatcher.Update([]*BenchTestModel{model}, []string{"my_value1", "my_value2"})
 						}
-						metrics.recordOperation(&metrics.Update, opStart, err)
+						iterationMetrics.recordOperation(&iterationMetrics.Update, opStart, err)
 					case 2: // Select
 						_, err = selectBatcher.Select("id = ?", id)
-						metrics.recordOperation(&metrics.Select, opStart, err)
+						iterationMetrics.recordOperation(&iterationMetrics.Select, opStart, err)
 					}
 				}
 			}(j)
 		}
 
 		wg.Wait()
-		totalDuration := time.Since(start)
+		iterationDuration := time.Since(start)
 
-		metrics.reportMetrics(b, totalDuration)
+		metrics.accumulateMetrics(iterationMetrics, iterationDuration)
 
 		verifyDataIntegrity(b, db, numRoutines, operationsPerRoutine)
 	}
+
+	metrics.printMetrics(b.N)
 }
 
 func verifyDataIntegrity(b *testing.B, db *gorm.DB, numRoutines, operationsPerRoutine int) {
@@ -129,9 +133,10 @@ type operationMetrics struct {
 
 type benchmarkMetrics struct {
 	sync.Mutex
-	Insert operationMetrics
-	Update operationMetrics
-	Select operationMetrics
+	Insert        operationMetrics
+	Update        operationMetrics
+	Select        operationMetrics
+	TotalDuration time.Duration
 }
 
 func newMetrics() *benchmarkMetrics {
@@ -148,17 +153,49 @@ func (m *benchmarkMetrics) recordOperation(op *operationMetrics, start time.Time
 	}
 }
 
-func (m *benchmarkMetrics) reportMetrics(b *testing.B, totalDuration time.Duration) {
-	reportOperationMetrics(b, "insert", &m.Insert, totalDuration)
-	reportOperationMetrics(b, "update", &m.Update, totalDuration)
-	reportOperationMetrics(b, "select", &m.Select, totalDuration)
+func (m *benchmarkMetrics) accumulateMetrics(iteration *benchmarkMetrics, duration time.Duration) {
+	m.Lock()
+	defer m.Unlock()
+	m.Insert.Count += iteration.Insert.Count
+	m.Insert.Errors += iteration.Insert.Errors
+	m.Insert.Duration += iteration.Insert.Duration
+	m.Update.Count += iteration.Update.Count
+	m.Update.Errors += iteration.Update.Errors
+	m.Update.Duration += iteration.Update.Duration
+	m.Select.Count += iteration.Select.Count
+	m.Select.Errors += iteration.Select.Errors
+	m.Select.Duration += iteration.Select.Duration
+	m.TotalDuration += duration
 }
 
-func reportOperationMetrics(b *testing.B, opName string, op *operationMetrics, totalDuration time.Duration) {
-	opsPerSec := float64(op.Count) / totalDuration.Seconds()
-	avgDuration := float64(op.Duration) / float64(op.Count)
+func (m *benchmarkMetrics) printMetrics(iterations int) {
+	fmt.Println("Benchmark Statistics:")
+	fmt.Printf("Total Duration: %v\n", m.TotalDuration)
+	fmt.Printf("Total Operations: %d\n", m.Insert.Count+m.Update.Count+m.Select.Count)
 
-	b.ReportMetric(opsPerSec, opName+"s/sec")
-	b.ReportMetric(avgDuration, "avg_"+opName+"_duration")
-	b.ReportMetric(float64(op.Errors), opName+"_errors")
+	fmt.Println("\nInsert Operations:")
+	fmt.Printf("  Count: %d\n", m.Insert.Count)
+	fmt.Printf("  Errors: %d\n", m.Insert.Errors)
+	fmt.Printf("  Total Duration: %v\n", m.Insert.Duration)
+	fmt.Printf("  Average Duration: %v\n", time.Duration(int64(m.Insert.Duration)/m.Insert.Count))
+
+	fmt.Println("\nUpdate Operations:")
+	fmt.Printf("  Count: %d\n", m.Update.Count)
+	fmt.Printf("  Errors: %d\n", m.Update.Errors)
+	fmt.Printf("  Total Duration: %v\n", m.Update.Duration)
+	fmt.Printf("  Average Duration: %v\n", time.Duration(int64(m.Update.Duration)/m.Update.Count))
+
+	fmt.Println("\nSelect Operations:")
+	fmt.Printf("  Count: %d\n", m.Select.Count)
+	fmt.Printf("  Errors: %d\n", m.Select.Errors)
+	fmt.Printf("  Total Duration: %v\n", m.Select.Duration)
+	fmt.Printf("  Average Duration: %v\n", time.Duration(int64(m.Select.Duration)/m.Select.Count))
+
+	fmt.Println("\nOverall:")
+	totalOps := float64(m.Insert.Count + m.Update.Count + m.Select.Count)
+	fmt.Printf("  Operations per second: %.2f\n", totalOps/m.TotalDuration.Seconds())
+	fmt.Printf("  Average time per operation: %v\n", time.Duration(int64(m.TotalDuration)/int64(totalOps)))
+
+	fmt.Printf("\nNumber of iterations: %d\n", iterations)
+	fmt.Printf("Average operations per iteration: %.2f\n", totalOps/float64(iterations))
 }
