@@ -12,19 +12,20 @@ import (
 )
 
 type cacheEntry struct {
-	key      string
-	result   []reflect.Value
-	ready    chan struct{}
-	expireAt time.Time
-	element  *list.Element
+	key       string
+	result    []reflect.Value
+	ready     chan struct{}
+	expireAt  time.Time
+	element   *list.Element
+	computing bool
 }
 
 type Option func(*memoizeOptions)
 
 type memoizeOptions struct {
-	maxSize        int
-	expiration     time.Duration
-	metricCallback MetricCallback
+	maxSize    int
+	expiration time.Duration
+	metrics    MetricsCollector
 }
 
 func WithMaxSize(size int) Option {
@@ -39,19 +40,21 @@ func WithExpiration(d time.Duration) Option {
 	}
 }
 
-// MemoMetrics now uses atomic int64 for counters
 type MemoMetrics struct {
 	Hits       atomic.Int64
 	Misses     atomic.Int64
 	Evictions  atomic.Int64
-	TotalItems int // This is set during cleanup, so it doesn't need to be atomic
+	TotalItems int
 }
 
-type MetricCallback func(*MemoMetrics)
+type MetricsCollector interface {
+	Setup(function interface{})
+	Collect(metrics *MemoMetrics)
+}
 
-func WithMetricCallback(callback MetricCallback) Option {
+func WithMetrics(collector MetricsCollector) Option {
 	return func(o *memoizeOptions) {
-		o.metricCallback = callback
+		o.metrics = collector
 	}
 }
 
@@ -69,129 +72,80 @@ func Memoize[F any](f F, options ...Option) F {
 		option(&opts)
 	}
 
-	cache := &sync.Map{}
+	cache := make(map[string]*list.Element)
 	lru := list.New()
 	var mutex sync.Mutex
 
-	metrics := MemoMetrics{}
+	metrics := &MemoMetrics{}
 
-	cleanup := func() {
-		mutex.Lock()
-		defer mutex.Unlock()
-
-		now := time.Now()
-		for lru.Len() > 0 {
-			oldest := lru.Back()
-			entry := oldest.Value.(*cacheEntry)
-			if now.After(entry.expireAt) || lru.Len() > opts.maxSize {
-				lru.Remove(oldest)
-				cache.Delete(entry.key)
-				metrics.Evictions.Add(1)
-			} else {
-				break
-			}
-		}
-
-		metrics.TotalItems = lru.Len()
-		if opts.metricCallback != nil {
-			opts.metricCallback(&metrics)
-		}
-		// Reset counters after reporting
-		metrics.Hits.Store(0)
-		metrics.Misses.Store(0)
-		metrics.Evictions.Store(0)
+	if opts.metrics != nil {
+		opts.metrics.Setup(f)
 	}
 
-	go func() {
-		for {
-			time.Sleep(opts.expiration / 10)
-			cleanup()
+	cleanup := func() {
+		now := time.Now()
+		for lru.Len() > opts.maxSize || (lru.Len() > 0 && now.After(lru.Back().Value.(*cacheEntry).expireAt)) {
+			oldest := lru.Back()
+			if oldest != nil {
+				lru.Remove(oldest)
+				delete(cache, oldest.Value.(*cacheEntry).key)
+				metrics.Evictions.Add(1)
+			}
 		}
-	}()
+		metrics.TotalItems = lru.Len()
+	}
 
 	wrapped := reflect.MakeFunc(ft, func(args []reflect.Value) []reflect.Value {
+		defer func() {
+			if opts.metrics != nil {
+				opts.metrics.Collect(metrics)
+			}
+		}()
+
 		key := makeKey(args)
 
+		mutex.Lock()
+		element, found := cache[key]
 		now := time.Now()
-		if value, found := cache.Load(key); found {
-			entry := value.(*cacheEntry)
+
+		if found {
+			entry := element.Value.(*cacheEntry)
 			if now.Before(entry.expireAt) {
-				<-entry.ready // Wait for the result to be ready
-				mutex.Lock()
-				lru.MoveToFront(entry.element)
+				lru.MoveToFront(element)
+				readyChan := entry.ready
 				mutex.Unlock()
+				<-readyChan // Wait for the result to be ready
 				metrics.Hits.Add(1)
 				return entry.result
 			}
 			// Entry has expired, remove it
-			mutex.Lock()
-			lru.Remove(entry.element)
-			cache.Delete(entry.key)
-			mutex.Unlock()
-			metrics.Evictions.Add(1)
+			lru.Remove(element)
+			delete(cache, key)
 		}
+
+		// Create a new entry or reuse the expired one
+		entry := &cacheEntry{
+			key:       key,
+			ready:     make(chan struct{}),
+			computing: true,
+			expireAt:  now.Add(opts.expiration), // Set the expiration time when creating the entry
+		}
+		element = lru.PushFront(entry)
+		cache[key] = element
+		mutex.Unlock()
 
 		// Compute the result
-		entry := &cacheEntry{
-			key:      key,
-			ready:    make(chan struct{}),
-			expireAt: now.Add(opts.expiration),
-		}
-		if actual, loaded := cache.LoadOrStore(key, entry); loaded {
-			entry = actual.(*cacheEntry)
-			<-entry.ready // Wait for the result to be ready
-			if now.Before(entry.expireAt) {
-				metrics.Hits.Add(1)
-				return entry.result
-			}
-			// Entry has expired, remove it and recompute
-			mutex.Lock()
-			lru.Remove(entry.element)
-			cache.Delete(entry.key)
-			mutex.Unlock()
-			metrics.Evictions.Add(1)
-		} else {
-			defer close(entry.ready) // Signal that the result is ready
-			entry.result = reflect.ValueOf(f).Call(args)
-
-			mutex.Lock()
-			if lru.Len() >= opts.maxSize {
-				oldest := lru.Back()
-				oldestEntry := oldest.Value.(*cacheEntry)
-				lru.Remove(oldest)
-				cache.Delete(oldestEntry.key)
-				metrics.Evictions.Add(1)
-			}
-			entry.element = lru.PushFront(entry)
-			mutex.Unlock()
-
-			metrics.Misses.Add(1)
-			return entry.result
-		}
-
-		// Recompute if entry was expired
-		newEntry := &cacheEntry{
-			key:      key,
-			ready:    make(chan struct{}),
-			expireAt: now.Add(opts.expiration),
-		}
-		cache.Store(key, newEntry)
-		defer close(newEntry.ready)
-		newEntry.result = reflect.ValueOf(f).Call(args)
+		result := reflect.ValueOf(f).Call(args)
 
 		mutex.Lock()
-		if lru.Len() >= opts.maxSize {
-			oldest := lru.Back()
-			oldestEntry := oldest.Value.(*cacheEntry)
-			lru.Remove(oldest)
-			cache.Delete(oldestEntry.key)
-			metrics.Evictions.Add(1)
-		}
-		newEntry.element = lru.PushFront(newEntry)
+		entry.result = result
+		entry.computing = false
+		cleanup()          // Clean up after adding new entry
+		close(entry.ready) // Signal that the result is ready
 		mutex.Unlock()
 
 		metrics.Misses.Add(1)
-		return newEntry.result
+		return result
 	})
 
 	return wrapped.Interface().(F)
