@@ -2,7 +2,6 @@ name: Go Multi-DB Tests and Benchmark
 
 on:
   push:
-    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
@@ -36,7 +35,7 @@ jobs:
       - name: Run Benchmark
         run: |
           set +e
-          go test -v -bench=BenchmarkGORMBatcher -benchtime=20s ./... > benchmark_output.txt 2>&1
+          go test -v -run=^$ -bench=BenchmarkGORMBatcher -benchtime=20s ./... > benchmark_output.txt 2>&1
           TEST_EXIT_CODE=$?
           cat benchmark_output.txt
           if [ $TEST_EXIT_CODE -ne 0 ]; then
@@ -54,7 +53,7 @@ jobs:
       - name: Summarize benchmark results
         run: |
           echo "## MySQL Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          grep "Benchmark Statistics:" -A 7 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -m -1 -A 28 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
 
   test-postgres:
     runs-on: ubuntu-latest
@@ -85,7 +84,7 @@ jobs:
       - name: Run Benchmark
         run: |
           set +e
-          go test -v -bench=BenchmarkGORMBatcher -benchtime=20s ./... > benchmark_output.txt 2>&1
+          go test -v -run=^$ -bench=BenchmarkGORMBatcher -benchtime=20s ./... > benchmark_output.txt 2>&1
           TEST_EXIT_CODE=$?
           cat benchmark_output.txt
           if [ $TEST_EXIT_CODE -ne 0 ]; then
@@ -103,7 +102,7 @@ jobs:
       - name: Summarize benchmark results
         run: |
           echo "## PostgreSQL Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          grep "Benchmark Statistics:" -A 7 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -m -1 -A 28 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
   test-sqlite:
     runs-on: ubuntu-latest
 
@@ -128,7 +127,7 @@ jobs:
       - name: Run Benchmark
         run: |
           set +e
-          go test -tags sqlite -v -bench=BenchmarkGORMBatcher -benchtime=20s ./... > benchmark_output.txt 2>&1
+          go test -tags sqlite -v -run=^$ -bench=BenchmarkGORMBatcher -benchtime=20s ./... > benchmark_output.txt 2>&1
           TEST_EXIT_CODE=$?
           cat benchmark_output.txt
           if [ $TEST_EXIT_CODE -ne 0 ]; then
@@ -138,3 +137,12 @@ jobs:
         env:
           DSN: ${{ env.DSN }}
           DIALECT: ${{ env.DIALECT }}
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        with:
+          name: sqlite-benchmark-results
+          path: benchmark_output.txt
+      - name: Summarize benchmark results
+        run: |
+          echo "## SQLite Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          grep "Benchmark Statistics:" -m -1 -A 28 benchmark_output.txt >> $GITHUB_STEP_SUMMARY
