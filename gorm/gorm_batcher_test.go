@@ -884,19 +884,51 @@ func TestUpdateBatcherWithRelationships(t *testing.T) {
 	db.Exec("DROP TABLE IF EXISTS related_models")
 	db.Exec("DROP TABLE IF EXISTS parent_models")
 
+	dialect := db.Dialector.Name()
+
 	// Create tables manually
-	createTableSQL := `
-    CREATE TABLE parent_models (
-        id INTEGER PRIMARY KEY AUTO_INCREMENT,
-        name VARCHAR(100),
-        my_value INTEGER
-    );
-    
-    CREATE TABLE related_models (
-        id INTEGER PRIMARY KEY AUTO_INCREMENT,
-        name VARCHAR(100),
-        parent_id INTEGER
-    );`
+	var createTableSQL string
+	switch dialect {
+	case "postgres":
+		createTableSQL = `
+		CREATE TABLE parent_models (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(100),
+			my_value INTEGER
+		);
+		
+		CREATE TABLE related_models (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(100),
+			parent_id INTEGER
+		);`
+	case "mysql":
+		createTableSQL = `
+        CREATE TABLE parent_models (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            name VARCHAR(100),
+            my_value INTEGER
+        );
+        
+        CREATE TABLE related_models (
+            id INTEGER PRIMARY KEY AUTO_INCREMENT,
+            name VARCHAR(100),
+            parent_id INTEGER
+        );`
+	case "sqlite":
+		createTableSQL = `
+        CREATE TABLE parent_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name VARCHAR(100),
+            my_value INTEGER
+        );
+        
+        CREATE TABLE related_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name VARCHAR(100),
+            parent_id INTEGER
+        );`
+	}
 
 	// Split and execute each statement
 	for _, stmt := range strings.Split(createTableSQL, ";") {
@@ -914,7 +946,7 @@ func TestUpdateBatcherWithRelationships(t *testing.T) {
 	assert.NoError(t, result.Error)
 
 	parentID := uint(0)
-	row := db.Raw("SELECT LAST_INSERT_ID()").Row()
+	row := db.Raw("SELECT MAX(id) FROM parent_models").Row()
 	err = row.Scan(&parentID)
 	assert.NoError(t, err)
 	assert.NotZero(t, parentID)
